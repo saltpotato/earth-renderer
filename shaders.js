@@ -24,6 +24,7 @@ out vec4 outColor;
 
 uniform vec2 uResolution;
 uniform vec3 uCamPos;
+uniform float uCamAlt;
 uniform vec3 uCamForward;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
@@ -52,11 +53,16 @@ uniform int uSampleIndex;
 uniform int uHighQuality;
 uniform int uHasCustomClouds;
 
+uniform vec4 uTileBounds;      // xMin, yMin, gridSize, nTiles
+uniform float uTileBlend;      // 0..1 blend weight for dynamic satellite/DEM patch
+
 uniform sampler2D uDayTex;
 uniform sampler2D uNightTex;
 uniform sampler2D uBrcTex;     // R: elevation/bump, G: roughness, B: clouds
 uniform sampler2D uCloudTex;   // Optional custom cloud texture (e.g. 8K clouds)
 uniform sampler2D uMoonTex;    // Lunar albedo / crater map
+uniform sampler2D uTileSatTex; // Dynamic Esri World Imagery patch
+uniform sampler2D uTileDemTex; // Dynamic AWS Terrarium DEM patch
 
 const float PI = 3.14159265359;
 const float TWO_PI = 6.28318530718;
@@ -129,10 +135,12 @@ vec2 intersectSphere(vec3 ro, vec3 rd, float r) {
   return vec2(-b - s, -b + s);
 }
 
-vec2 intersectSphereAt(vec3 ro, vec3 rd, vec3 center, float r) {
-  vec3 oc = ro - center;
-  float b = dot(oc, rd);
-  float c = dot(oc, oc) - r * r;
+// High-precision intersection for camera rays near R_EARTH = 1.0 + dR
+// Avoids float32 cancellation of dot(ro,ro) - 1.0 when zoomed down to ~1 km altitude!
+vec2 intersectSphereFromCam(vec3 ro, vec3 rd, float camAlt, float dR) {
+  float b = dot(ro, rd);
+  float diff = camAlt - dR;
+  float c = diff * (camAlt + dR + 2.0);
   float h = b * b - c;
   if (h < 0.0) return vec2(-1.0);
   float s = sqrt(h);
@@ -143,6 +151,35 @@ vec3 rotateY(vec3 v, float a) {
   float c = cos(a);
   float s = sin(a);
   return vec3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z);
+}
+
+vec2 sphereToMercatorTileUv(vec3 n, float lonOffset, vec4 bounds) {
+  vec3 nr = rotateY(n, lonOffset);
+  float lon = atan(nr.x, nr.z);
+  float nTiles = bounds.w;
+  float tx = (lon / TWO_PI + 0.5) * nTiles;
+  float sinLat = clamp(nr.y, -0.996, 0.996);
+  float mercY = 0.5 - log((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * PI);
+  float ty = mercY * nTiles;
+
+  // Wrap horizontal delta cleanly across antimeridian
+  float dx = mod(tx - bounds.x + nTiles * 0.5, nTiles) - nTiles * 0.5;
+  float dy = ty - bounds.y;
+  return vec2(dx, dy) / bounds.z;
+}
+
+float decodeTerrariumMeters(vec3 rgb) {
+  return (rgb.r * 255.0 * 256.0 + rgb.g * 255.0 + rgb.b * (255.0 / 256.0)) - 32768.0;
+}
+
+vec2 intersectSphereAt(vec3 ro, vec3 rd, vec3 center, float r) {
+  vec3 oc = ro - center;
+  float b = dot(oc, rd);
+  float c = dot(oc, oc) - r * r;
+  float h = b * b - c;
+  if (h < 0.0) return vec2(-1.0);
+  float s = sqrt(h);
+  return vec2(-b - s, -b + s);
 }
 
 vec2 sphereToUv(vec3 n, float lonOffset) {
@@ -515,11 +552,13 @@ void main() {
   }
 
   AtmoParams atmo = getAtmoParams();
-  float rCloud = R_EARTH + 0.0038 * max(uAtmoHeight, 0.4);
+  float dAtmo = atmo.rAtmo - R_EARTH;
+  float dCloud = 0.0038 * max(uAtmoHeight, 0.4);
+  float rCloud = R_EARTH + dCloud;
 
-  vec2 atmoHit = intersectSphere(ro, rd, atmo.rAtmo);
-  vec2 earthHit = intersectSphere(ro, rd, R_EARTH);
-  vec2 cloudHit = intersectSphere(ro, rd, rCloud);
+  vec2 atmoHit = intersectSphereFromCam(ro, rd, uCamAlt, dAtmo);
+  vec2 earthHit = intersectSphereFromCam(ro, rd, uCamAlt, 0.0);
+  vec2 cloudHit = intersectSphereFromCam(ro, rd, uCamAlt, dCloud);
   vec2 moonHit = (uMoonEnabled == 1)
     ? intersectSphereAt(ro, rd, uMoonPos, uMoonRadius)
     : vec2(-1.0);
@@ -548,6 +587,22 @@ void main() {
     float oceanMask = smoothstep(0.50, 0.24, roughness);
     float landMask = 1.0 - oceanMask;
 
+    // Dynamic Deep-Zoom Satellite Tile Patch (Esri World Imagery + AWS Terrarium DEM)
+    float tileMask = 0.0;
+    vec2 tileUv = vec2(-1.0);
+    if (uTileBlend > 0.001 && uTileBounds.w > 1.5) {
+      tileUv = sphereToMercatorTileUv(N, uEarthRot, uTileBounds);
+      if (tileUv.x > 0.0 && tileUv.x < 1.0 && tileUv.y > 0.0 && tileUv.y < 1.0) {
+        float fx = smoothstep(0.0, 0.10, tileUv.x) * smoothstep(1.0, 0.90, tileUv.x);
+        float fy = smoothstep(0.0, 0.10, tileUv.y) * smoothstep(1.0, 0.90, tileUv.y);
+        tileMask = fx * fy * uTileBlend;
+
+        vec3 satSRGB = textureLod(uTileSatTex, tileUv, 0.0).rgb;
+        vec3 satLinear = pow(max(satSRGB, 0.0), vec3(2.2));
+        dayAlbedo = mix(dayAlbedo, satLinear, tileMask);
+      }
+    }
+
     vec3 upRef = abs(N.y) < 0.995 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 T = normalize(cross(upRef, N));
     vec3 B = cross(N, T);
@@ -561,7 +616,26 @@ void main() {
       float hU = textureLod(uBrcTex, sphereToUv(normalize(N + B * eps), uEarthRot), 0.0).r;
 
       float reliefScale = uBumpStrength * 14.0 * landMask;
-      Nsurf = normalize(N - ((hR - hL) * T + (hU - hD) * B) * reliefScale);
+      vec3 Nglobal = normalize(N - ((hR - hL) * T + (hU - hD) * B) * reliefScale);
+
+      if (tileMask > 0.01) {
+        // High-resolution Terrarium DEM finite-difference normal (8x8 = 2048x2048 patch)
+        float du = 2.0 / 2048.0;
+        float dL = decodeTerrariumMeters(textureLod(uTileDemTex, clamp(tileUv - vec2(du, 0.0), 0.0, 1.0), 0.0).rgb);
+        float dR = decodeTerrariumMeters(textureLod(uTileDemTex, clamp(tileUv + vec2(du, 0.0), 0.0, 1.0), 0.0).rgb);
+        // Note: tileUv.y increases southward, so -du is North (+B)
+        float dN = decodeTerrariumMeters(textureLod(uTileDemTex, clamp(tileUv - vec2(0.0, du), 0.0, 1.0), 0.0).rgb);
+        float dS = decodeTerrariumMeters(textureLod(uTileDemTex, clamp(tileUv + vec2(0.0, du), 0.0, 1.0), 0.0).rgb);
+
+        float cosLat = max(0.2, sqrt(max(0.0, 1.0 - N.y * N.y)));
+        float spanMeters = max(12.0, (4.0 * 156543.0 * cosLat) / uTileBounds.w);
+        float sx = clamp((dR - dL) / spanMeters, -2.5, 2.5);
+        float sy = clamp((dN - dS) / spanMeters, -2.5, 2.5);
+        vec3 Nlocal = normalize(N - (sx * T + sy * B) * uBumpStrength * 1.45);
+        Nsurf = normalize(mix(Nglobal, Nlocal, tileMask));
+      } else {
+        Nsurf = Nglobal;
+      }
     }
 
     if (oceanMask > 0.01) {
@@ -576,13 +650,16 @@ void main() {
     vec3 sunOD = computeOpticalDepthToSun(hitPos + N * 0.0003, sunDir, atmo, surfLightSteps);
     vec3 sunTrans = (sunOD.x < 1e4) ? transmittanceFromOD(sunOD, atmo) : vec3(0.0);
 
+    // Smoothly part global clouds when diving into low-altitude Deep Zoom (< 280 km)
+    float deepCloudFade = smoothstep(0.003, 0.045, uCamAlt);
+
     float cloudShadowFactor = 1.0;
-    if (uCloudCover > 0.01 && uCloudShadow > 0.01 && dot(N, sunDir) > -0.05) {
+    if (uCloudCover > 0.01 && uCloudShadow > 0.01 && deepCloudFade > 0.01 && dot(N, sunDir) > -0.05) {
       vec2 shHit = intersectSphere(hitPos, sunDir, rCloud);
       if (shHit.y > 0.0) {
         vec3 cloudShadowPos = hitPos + sunDir * shHit.y;
         float cDens = sampleCloudDensity(normalize(cloudShadowPos));
-        cloudShadowFactor = 1.0 - cDens * uCloudShadow * 0.88;
+        cloudShadowFactor = 1.0 - cDens * uCloudShadow * 0.88 * deepCloudFade;
       }
     }
 
@@ -650,7 +727,7 @@ void main() {
           cloudCol += underLights * cNight * uNightLights * 0.22 * (1.0 - cDens * 0.55);
         }
 
-        float alpha = smoothstep(0.04, 0.88, cDens);
+        float alpha = smoothstep(0.04, 0.88, cDens) * deepCloudFade;
         surfColor = mix(surfColor, cloudCol, alpha);
       }
     }

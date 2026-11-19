@@ -1,4 +1,5 @@
 import { fullscreenVert, earthRaytraceFrag, displayFrag } from './shaders.js';
+import { DynamicTileStreamer } from './tileStreamer.js';
 
 const CDN_TEXTURES = {
   day: [
@@ -153,13 +154,14 @@ export class EarthRaytracer {
     this.vao = gl.createVertexArray();
 
     this.uRay = this._getUniforms(this.rayProgram, [
-      'uResolution', 'uCamPos', 'uCamForward', 'uCamRight', 'uCamUp', 'uTanHalfFov',
+      'uResolution', 'uCamPos', 'uCamAlt', 'uCamForward', 'uCamRight', 'uCamUp', 'uTanHalfFov',
       'uSunDir', 'uEarthRot', 'uCloudOffset', 'uTime',
       'uAtmoDensity', 'uAtmoHeight', 'uCloudCover', 'uCloudShadow',
       'uBumpStrength', 'uOceanSpec', 'uNightLights', 'uStarsIntensity', 'uAuroraIntensity',
       'uMoonEnabled', 'uMoonPos', 'uMoonRadius',
       'uSampleIndex', 'uHighQuality', 'uHasCustomClouds',
-      'uDayTex', 'uNightTex', 'uBrcTex', 'uCloudTex', 'uMoonTex',
+      'uTileBounds', 'uTileBlend',
+      'uDayTex', 'uNightTex', 'uBrcTex', 'uCloudTex', 'uMoonTex', 'uTileSatTex', 'uTileDemTex',
     ]);
     this.uDisp = this._getUniforms(this.displayProgram, [
       'uAccumTex', 'uResolution', 'uExposure',
@@ -171,9 +173,24 @@ export class EarthRaytracer {
       brc: this._createEmptyTexture([128, 50, 0, 255]),
       clouds: this._createEmptyTexture([0, 0, 0, 255]),
       moon: this._createEmptyTexture([130, 128, 122, 255]),
+      tileSat: this._createEmptyTexture([12, 32, 68, 255], true),
+      tileDem: this._createEmptyTexture([128, 0, 0, 255], true),
     };
     this.hasCustomClouds = false;
     this.textureTier = '4K CDN';
+
+    // Dynamic Deep-Zoom Tile Streamer (Esri World Imagery + AWS Terrarium DEM)
+    this.onTileStatusChange = null;
+    this.tileStreamer = new DynamicTileStreamer(({ satCanvas, demCanvas, zoom }) => {
+      this._uploadTexture(this.textures.tileSat, satCanvas, true);
+      this._uploadTexture(this.textures.tileDem, demCanvas, true);
+      if (this.onTileStatusChange) {
+        this.onTileStatusChange({ zoom, loading: false });
+      }
+    });
+
+    // Smooth Deep-Zoom flight animation state
+    this.flight = null;
 
     // Scene state
     this.state = {
@@ -238,24 +255,24 @@ export class EarthRaytracer {
     return map;
   }
 
-  _createEmptyTexture(rgba) {
+  _createEmptyTexture(rgba, clampS = false) {
     const gl = this.gl;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(rgba));
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, clampS ? gl.CLAMP_TO_EDGE : gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     return tex;
   }
 
-  _uploadTexture(tex, source) {
+  _uploadTexture(tex, source, clampS = false) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, clampS ? gl.CLAMP_TO_EDGE : gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -461,16 +478,71 @@ export class EarthRaytracer {
     ];
   }
 
+  getCameraLatLon() {
+    const latDeg = (this.state.camPitch * 180) / Math.PI;
+    let lonDeg = ((this.state.camYaw + this.state.earthRot) * 180) / Math.PI;
+    lonDeg = ((((lonDeg + 180) % 360) + 360) % 360) - 180;
+    return { latDeg, lonDeg, alt: this.state.camDist - 1.0 };
+  }
+
+  flyToLocation(latDeg, lonDeg, targetAltKm = 8, durationSec = 4.2, startFromSpace = true) {
+    const targetPitch = (latDeg * Math.PI) / 180;
+    const targetYaw = (lonDeg * Math.PI) / 180 - this.state.earthRot;
+    // Pick shortest angular path for yaw
+    let deltaYaw = targetYaw - this.state.camYaw;
+    while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
+    while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
+
+    const startAlt = startFromSpace
+      ? Math.max(this.state.camDist - 1.0, 1.85)
+      : Math.max(0.00025, this.state.camDist - 1.0);
+    const endAlt = Math.max(0.00024, targetAltKm / 6371);
+
+    // Position sun at a flattering oblique angle (~38 deg west of target) for dramatic DEM relief
+    const targetSunAz = ((((lonDeg - 42 + 180) % 360) + 360) % 360) - 180;
+    const targetSunEl = Math.max(12, Math.min(34, latDeg * 0.45 + 12));
+
+    this.flight = {
+      elapsed: 0,
+      duration: durationSec,
+      startYaw: this.state.camYaw,
+      endYaw: this.state.camYaw + deltaYaw,
+      startPitch: this.state.camPitch,
+      endPitch: targetPitch,
+      startLogAlt: Math.log(startAlt),
+      endLogAlt: Math.log(endAlt),
+      startSunAz: this.state.sunAzDeg,
+      endSunAz: targetSunAz,
+      startSunEl: this.state.sunElDeg,
+      endSunEl: targetSunEl,
+    };
+    this.state.camTargetOffset = [0, 0, 0];
+    this.state.camDist = 1.0 + startAlt;
+  }
+
+  cancelFlight() {
+    this.flight = null;
+  }
+
   _bindRayUniforms(width, height, sampleIndex, highQuality) {
     const gl = this.gl;
     const cam = this._computeCameraBasis();
     const sun = this._computeSunDir();
     const moonPos = this._computeMoonPos();
     const tanHalfFov = Math.tan(((this.state.fovDeg * Math.PI) / 180) * 0.5);
+    const camAlt = Math.max(0.0001, this.state.camDist - 1.0);
+
+    // Smoothly blend high-res Esri+DEM tile patch as camera descends below ~3,500 km
+    let tileBlend = 0.0;
+    if (this.tileStreamer.enabled && this.tileStreamer.hasValidPatch && camAlt < 0.62) {
+      const t = Math.max(0, Math.min(1, (0.58 - camAlt) / 0.34));
+      tileBlend = t * t * (3 - 2 * t);
+    }
 
     gl.useProgram(this.rayProgram);
     gl.uniform2f(this.uRay.uResolution, width, height);
     gl.uniform3fv(this.uRay.uCamPos, cam.pos);
+    gl.uniform1f(this.uRay.uCamAlt, camAlt);
     gl.uniform3fv(this.uRay.uCamForward, cam.forward);
     gl.uniform3fv(this.uRay.uCamRight, cam.right);
     gl.uniform3fv(this.uRay.uCamUp, cam.up);
@@ -499,6 +571,9 @@ export class EarthRaytracer {
     gl.uniform1i(this.uRay.uHighQuality, highQuality ? 1 : 0);
     gl.uniform1i(this.uRay.uHasCustomClouds, this.hasCustomClouds ? 1 : 0);
 
+    gl.uniform4fv(this.uRay.uTileBounds, this.tileStreamer.activeBounds);
+    gl.uniform1f(this.uRay.uTileBlend, tileBlend);
+
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.textures.day);
     gl.uniform1i(this.uRay.uDayTex, 0);
@@ -518,6 +593,14 @@ export class EarthRaytracer {
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, this.textures.moon);
     gl.uniform1i(this.uRay.uMoonTex, 4);
+
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.textures.tileSat);
+    gl.uniform1i(this.uRay.uTileSatTex, 5);
+
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, this.textures.tileDem);
+    gl.uniform1i(this.uRay.uTileDemTex, 6);
   }
 
   _drawDisplayToTarget(targetFbo, targetW, targetH, preserveAspect) {
@@ -602,7 +685,18 @@ export class EarthRaytracer {
     const smooth = progress * progress * (3 - 2 * progress);
     this.state.time = base.time + progress * job.durationSec;
 
-    if (job.animType === 'sunrise') {
+    if (job.animType === 'deep-zoom') {
+      // Exponential Space-to-City Deep Zoom: ~14,000 km -> ~6 km altitude
+      const startLogAlt = Math.log(2.20);
+      const endLogAlt = Math.log(6 / 6371);
+      const ease = 1 - Math.pow(1 - smooth, 1.35);
+      const alt = Math.exp(startLogAlt + (endLogAlt - startLogAlt) * ease);
+      this.state.camDist = 1.0 + alt;
+      this.state.camYaw = base.camYaw;
+      this.state.camPitch = base.camPitch;
+      this.state.camTargetOffset = [0, 0, 0];
+      this.state.cloudOffsetDeg = base.cloudOffsetDeg + progress * 3;
+    } else if (job.animType === 'sunrise') {
       this.state.sunAzDeg = base.sunAzDeg - 55 + progress * 110;
       this.state.sunElDeg = base.sunElDeg - 6 + Math.sin(progress * Math.PI) * 14;
       this.state.cloudOffsetDeg = base.cloudOffsetDeg + progress * 6;
@@ -627,9 +721,26 @@ export class EarthRaytracer {
   tick(dt) {
     if (this.mode === 'live') {
       this.state.time += dt;
-      if (this.state.autoRotate) {
+      if (this.flight) {
+        this.flight.elapsed += dt;
+        const p = Math.min(1, this.flight.elapsed / this.flight.duration);
+        const s = p * p * (3 - 2 * p);
+        this.state.camYaw = this.flight.startYaw + (this.flight.endYaw - this.flight.startYaw) * s;
+        this.state.camPitch = this.flight.startPitch + (this.flight.endPitch - this.flight.startPitch) * s;
+        const logAlt = this.flight.startLogAlt + (this.flight.endLogAlt - this.flight.startLogAlt) * s;
+        this.state.camDist = 1.0 + Math.exp(logAlt);
+        this.state.sunAzDeg = this.flight.startSunAz + (this.flight.endSunAz - this.flight.startSunAz) * s;
+        this.state.sunElDeg = this.flight.startSunEl + (this.flight.endSunEl - this.flight.startSunEl) * s;
+        if (this.onFlightUpdate) this.onFlightUpdate();
+        if (p >= 1) this.flight = null;
+      } else if (this.state.autoRotate) {
         this.state.earthRot += dt * 0.04;
       }
+
+      // Stream dynamic Esri + Terrarium tiles automatically when zoomed in
+      const { latDeg, lonDeg, alt } = this.getCameraLatLon();
+      this.tileStreamer.updateForCamera(latDeg, lonDeg, alt, this.state.fovDeg);
+
       this._ensureAccumFbo(this.canvas.width, this.canvas.height);
       this._renderSampleToAccum(0, false);
       this._drawDisplayToTarget(null, this.canvas.width, this.canvas.height, false);
@@ -657,7 +768,12 @@ export class EarthRaytracer {
     }
   }
 
-  startOfflineRender(width, height, spp) {
+  async startOfflineRender(width, height, spp) {
+    this.cancelFlight();
+    const { latDeg, lonDeg, alt } = this.getCameraLatLon();
+    if (alt < 0.62 && this.tileStreamer.enabled) {
+      await this.tileStreamer.ensureReady(latDeg, lonDeg, alt, this.state.fovDeg);
+    }
     this._ensureAccumFbo(width, height);
     this.mode = 'rendering';
     this.renderTargetSpp = spp;
@@ -720,6 +836,7 @@ export class EarthRaytracer {
       totalFrames,
       currentFrame: 0,
       currentSpp: 0,
+      waitingForTiles: false,
       startTime: performance.now(),
       mimeType,
       outTex,
@@ -742,7 +859,21 @@ export class EarthRaytracer {
 
   _tickVideoRender() {
     const job = this.videoJob;
-    if (!job) return;
+    if (!job || job.waitingForTiles) return;
+
+    // Ensure high-res satellite/DEM tiles are loaded before raytracing a low-altitude frame
+    if (job.currentSpp === 0 && this.tileStreamer.enabled) {
+      const { latDeg, lonDeg, alt } = this.getCameraLatLon();
+      if (alt < 0.62) {
+        job.waitingForTiles = true;
+        this.tileStreamer.ensureReady(latDeg, lonDeg, alt, this.state.fovDeg).then(() => {
+          if (this.videoJob === job) {
+            job.waitingForTiles = false;
+          }
+        });
+        return;
+      }
+    }
 
     // Accumulate samples for the current video frame (up to 2 samples per animation frame)
     const batch = job.width >= 2560 ? 1 : 2;

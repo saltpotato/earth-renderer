@@ -31,6 +31,7 @@
       <div class="telemetry" id="telemetry">
         <span id="stat-mode" class="badge badge-live">LIVE VORSCHAU</span>
         <span id="stat-tex" class="badge badge-tex">4K CDN</span>
+        <span id="stat-tile" class="badge badge-tile hidden">LIVE Z14</span>
         <span id="stat-res" class="mono">1280×720</span>
         <span id="stat-alt" class="mono">ALT 15.600 km</span>
       </div>
@@ -99,7 +100,8 @@
           <label class="field">
             <span>Kamerafahrt / Animation</span>
             <select id="video-anim">
-              <option value="sunrise" selected>Sonnenaufgang (Terminator)</option>
+              <option value="deep-zoom" selected>Deep Zoom (Weltall → Zielort)</option>
+              <option value="sunrise">Sonnenaufgang (Terminator)</option>
               <option value="orbit">Orbit-Vorbeiflug</option>
               <option value="iss-flyover">ISS-Horizontflug + Aurora</option>
               <option value="rotation-moon">Erdrotation + Mond-Orbit</option>
@@ -137,6 +139,26 @@
           <button id="btn-render-video" class="btn btn-video btn-full">
             ▶ Video-Sequenz rendern
           </button>
+        </section>
+
+        <!-- Deep-Zoom Live Tile Destinations -->
+        <section class="section deepzoom-section">
+          <h3>Deep-Zoom (Live-Kacheln)</h3>
+          <label class="checkbox-row">
+            <input type="checkbox" id="tile-stream-enabled" checked />
+            <span>Esri Satellit + AWS Höhen-DEM</span>
+          </label>
+          <div class="preset-grid">
+            <button class="preset-btn zoom-btn" data-zoom="berlin">Berlin</button>
+            <button class="preset-btn zoom-btn" data-zoom="alps">Alpen / Matterhorn</button>
+            <button class="preset-btn zoom-btn" data-zoom="nyc">New York</button>
+            <button class="preset-btn zoom-btn" data-zoom="canyon">Grand Canyon</button>
+            <button class="preset-btn zoom-btn" data-zoom="fuji">Mt. Fuji / Tokio</button>
+            <button class="preset-btn zoom-btn" data-zoom="venice">Venedig</button>
+          </div>
+          <p class="hint">
+            Klicke ein Ziel für den Deep-Zoom-Flug (oder scrolle beliebig tief bis 1,5 km Höhe).
+          </p>
         </section>
 
         <!-- Camera Presets -->

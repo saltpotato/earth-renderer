@@ -139,11 +139,21 @@ const PRESETS = {
   },
 };
 
+const DEEP_ZOOM_TARGETS = {
+  berlin: { name: 'Berlin', lat: 52.5200, lon: 13.4050, altKm: 8 },
+  alps:   { name: 'Matterhorn', lat: 45.9763, lon: 7.6586, altKm: 12 },
+  nyc:    { name: 'New York', lat: 40.7580, lon: -73.9855, altKm: 9 },
+  canyon: { name: 'Grand Canyon', lat: 36.1069, lon: -112.1129, altKm: 18 },
+  fuji:   { name: 'Mt. Fuji', lat: 35.3606, lon: 138.7274, altKm: 16 },
+  venice: { name: 'Venedig', lat: 45.4408, lon: 12.3155, altKm: 7 },
+};
+
 const canvas = document.getElementById('viewport');
 const loadingOverlay = document.getElementById('loading-overlay');
 const loadingTitle = document.getElementById('loading-title');
 const statMode = document.getElementById('stat-mode');
 const statTex = document.getElementById('stat-tex');
+const statTile = document.getElementById('stat-tile');
 const statRes = document.getElementById('stat-res');
 const statAlt = document.getElementById('stat-alt');
 
@@ -229,12 +239,30 @@ document.getElementById('auto-rotate').addEventListener('change', (e) => {
   renderer.state.autoRotate = e.target.checked;
 });
 
+document.getElementById('tile-stream-enabled').addEventListener('change', (e) => {
+  renderer.tileStreamer.enabled = e.target.checked;
+  updateTelemetry();
+});
+
+// Deep-Zoom Live Tile Destinations
+document.querySelectorAll('.zoom-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const t = DEEP_ZOOM_TARGETS[btn.dataset.zoom];
+    if (!t) return;
+    if (renderer.mode !== 'live') exitRenderView();
+    renderer.tileStreamer.enabled = true;
+    document.getElementById('tile-stream-enabled').checked = true;
+    renderer.flyToLocation(t.lat, t.lon, t.altKm, 3.6, true);
+  });
+});
+
 // Presets
-document.querySelectorAll('.preset-btn').forEach((btn) => {
+document.querySelectorAll('.preset-btn[data-preset]').forEach((btn) => {
   btn.addEventListener('click', () => {
     const p = PRESETS[btn.dataset.preset];
     if (!p) return;
     if (renderer.mode !== 'live') exitRenderView();
+    renderer.cancelFlight();
     Object.assign(renderer.state, {
       ...p,
       camTargetOffset: [...p.camTargetOffset],
@@ -411,6 +439,7 @@ let lastY = 0;
 
 canvas.addEventListener('pointerdown', (e) => {
   if (renderer.mode !== 'live') return;
+  renderer.cancelFlight();
   isDragging = true;
   lastX = e.clientX;
   lastY = e.clientY;
@@ -429,13 +458,17 @@ canvas.addEventListener('pointermove', (e) => {
     renderer.state.sunElDeg = Math.max(-45, Math.min(45, renderer.state.sunElDeg - dy * 0.25));
     syncSlidersFromState();
   } else {
-    const speed = 0.0045 * Math.min(1.0, (renderer.state.camDist - 1.0) * 0.8 + 0.18);
-    renderer.state.camYaw -= dx * speed;
+    // Smoothly scale pan speed with altitude all the way down to 1.5 km!
+    const alt = Math.max(0.00024, renderer.state.camDist - 1.0);
+    const speed = 0.0042 * Math.min(1.0, alt * 0.85);
+    const cosLat = Math.max(0.18, Math.cos(renderer.state.camPitch));
+    renderer.state.camYaw -= (dx * speed) / cosLat;
     renderer.state.camPitch = Math.max(
       -Math.PI * 0.48,
       Math.min(Math.PI * 0.48, renderer.state.camPitch + dy * speed)
     );
     renderer.state.camTargetOffset = [0, 0, 0];
+    updateTelemetry();
   }
 });
 
@@ -449,9 +482,11 @@ canvas.addEventListener('pointerup', (e) => {
 canvas.addEventListener('wheel', (e) => {
   if (renderer.mode !== 'live') return;
   e.preventDefault();
-  const zoomFactor = Math.exp(e.deltaY * 0.0011);
+  renderer.cancelFlight();
+  const zoomFactor = Math.exp(e.deltaY * 0.0012);
   const alt = renderer.state.camDist - 1.0;
-  const newAlt = Math.max(0.10, Math.min(5.5, alt * zoomFactor));
+  // Allow zooming from 35,000 km all the way down to 1.5 km altitude!
+  const newAlt = Math.max(0.00024, Math.min(5.5, alt * zoomFactor));
   renderer.state.camDist = 1.0 + newAlt;
   updateTelemetry();
 }, { passive: false });
@@ -469,12 +504,32 @@ window.addEventListener('keydown', (e) => {
 // Telemetry & Main Loop
 // ---------------------------------------------------------------------------
 function updateTelemetry() {
-  const altKm = Math.round((renderer.state.camDist - 1.0) * 6371);
-  statAlt.textContent = `ALT ${altKm.toLocaleString('de-DE')} km`;
+  const { latDeg, lonDeg, alt } = renderer.getCameraLatLon();
+  const altKm = alt * 6371;
+  const altStr = altKm >= 100
+    ? `${Math.round(altKm).toLocaleString('de-DE')} km`
+    : `${altKm.toFixed(1).replace('.', ',')} km`;
+  const latStr = `${Math.abs(latDeg).toFixed(2)}°${latDeg >= 0 ? 'N' : 'S'}`;
+  const lonStr = `${Math.abs(lonDeg).toFixed(2)}°${lonDeg >= 0 ? 'E' : 'W'}`;
+  statAlt.textContent = `ALT ${altStr} · ${latStr} ${lonStr}`;
+
+  if (renderer.tileStreamer.enabled && renderer.tileStreamer.hasValidPatch && alt < 0.62) {
+    statTile.textContent = `LIVE Z${renderer.tileStreamer.activeZoom}`;
+    statTile.classList.remove('hidden');
+  } else {
+    statTile.classList.add('hidden');
+  }
+
   if (renderer.mode === 'live') {
     statRes.textContent = `${canvas.width}×${canvas.height}`;
   }
 }
+
+renderer.onTileStatusChange = () => updateTelemetry();
+renderer.onFlightUpdate = () => {
+  syncSlidersFromState();
+  updateTelemetry();
+};
 
 window.addEventListener('resize', () => {
   renderer.resize();
