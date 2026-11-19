@@ -179,45 +179,35 @@
           <p id="ap-status" class="hint hidden"></p>
         </section>
 
-        <!-- Gemini AI Texture Enrichment -->
+        <!-- Local Zero-Install Texture Enhancement & Cache -->
         <section class="section ai-section">
-          <h3>✨ KI-Textur-Anreicherung (Gemini)</h3>
-          <form class="field" onsubmit="return false;">
-            <span>Gemini API-Key (lokal gespeichert)</span>
-            <input
-              type="password"
-              id="ai-api-key"
-              class="ai-input"
-              placeholder="AIza… (Google AI Studio)"
-              autocomplete="off"
-            />
-          </form>
+          <h3>✦ Lokale Textur-Veredelung</h3>
           <label class="field">
-            <span>Anreicherungs-Stil</span>
+            <span>Look / Schärfe</span>
             <select id="ai-style">
-              <option value="photoreal" selected>Fotorealistisch (1:1 Satellit)</option>
-              <option value="natgeo">National Geographic (Lebendig)</option>
-              <option value="cinematic">Kino-Detail (Kontrastreich)</option>
+              <option value="sharp">Klar &amp; Scharf (Dehaze)</option>
+              <option value="natgeo" selected>National Geographic (Lebendig)</option>
+              <option value="cinematic">Kino-Kontrast (Dramatisch)</option>
             </select>
           </label>
           <label class="checkbox-row">
-            <input type="checkbox" id="ai-auto-enrich" />
-            <span>Automatisch beim Kachelladen / Flug</span>
+            <input type="checkbox" id="ai-auto-enrich" checked />
+            <span>Automatisch beim Kachelladen &amp; Flug</span>
           </label>
           <div class="ai-btn-row">
             <button id="btn-ai-enrich" class="btn btn-ai">
-              ✨ Kacheln anreichern
+              ✦ Jetzt veredeln
             </button>
-            <button id="btn-ai-toggle" class="btn btn-secondary hidden" title="Original vs. KI vergleichen">
-              Vorher/Nachher
+            <button id="btn-ai-toggle" class="btn btn-secondary hidden" title="Original vs. Veredelt vergleichen">
+              Original
             </button>
           </div>
           <div class="ai-cache-row">
             <span id="ai-cache-info" class="mono hint">Cache: 0 Patches</span>
-            <button id="btn-ai-clear-cache" class="btn-link" title="Alle gespeicherten KI-Kacheln löschen">Leeren</button>
+            <button id="btn-ai-clear-cache" class="btn-link" title="Alle gespeicherten Textur-Kacheln löschen">Leeren</button>
           </div>
           <p id="ai-status" class="hint">
-            Veredelt das aktive Satelliten-Patch einmalig per <code>gemini-2.5-flash-image</code> und speichert es dauerhaft im Cache.
+            100 % lokal ohne API-Key: Dehazing, Schärfung &amp; DEM-Detail direkt in den Festplatten-/Browser-Cache.
           </p>
         </section>
 

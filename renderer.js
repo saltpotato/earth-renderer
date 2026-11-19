@@ -968,6 +968,7 @@ export class EarthRaytracer {
     const img = await this.aiEnricher.enrichPatch({
       patchKey,
       satCanvas: this.tileStreamer.satCanvas,
+      demCanvas: this.tileStreamer.demCanvas,
       latDeg,
       lonDeg,
       zoom,

@@ -838,9 +838,8 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------------------------
-// Gemini AI Satellite Texture Enrichment
+// Local Zero-Install Satellite Texture Enhancement & Persistent Cache
 // ---------------------------------------------------------------------------
-const aiApiKeyEl = document.getElementById('ai-api-key');
 const aiStyleEl = document.getElementById('ai-style');
 const aiAutoEnrichEl = document.getElementById('ai-auto-enrich');
 const btnAiEnrich = document.getElementById('btn-ai-enrich');
@@ -849,17 +848,12 @@ const aiCacheInfoEl = document.getElementById('ai-cache-info');
 const btnAiClearCache = document.getElementById('btn-ai-clear-cache');
 const aiStatusEl = document.getElementById('ai-status');
 
-aiApiKeyEl.value = renderer.aiEnricher.apiKey;
-renderer.aiEnricher.loadKeyFromEnv().then((key) => {
-  if (key) {
-    aiApiKeyEl.value = key;
-    aiStatusEl.textContent = 'Gemini API-Key aus lokaler .env geladen — bereit!';
-  }
-});
+aiStyleEl.value = renderer.aiEnricher.styleId;
+aiAutoEnrichEl.checked = renderer.aiEnricher.autoEnrich;
 
 renderer.aiEnricher.onCacheStatsChange = ({ count, disk }) => {
   const mode = disk ? 'Disk + IDB' : 'Browser-IDB';
-  aiCacheInfoEl.textContent = `Cache: ${count} KI-Patches (${mode})`;
+  aiCacheInfoEl.textContent = `Cache: ${count} Patches (${mode})`;
 };
 renderer.aiEnricher.initPersistentCache();
 
@@ -867,21 +861,17 @@ btnAiClearCache.addEventListener('click', () => {
   renderer.aiEnricher.clearAllCache();
 });
 
-aiApiKeyEl.addEventListener('change', () => {
-  renderer.aiEnricher.setApiKey(aiApiKeyEl.value);
-});
-aiApiKeyEl.addEventListener('input', () => {
-  renderer.aiEnricher.setApiKey(aiApiKeyEl.value);
-});
-
 aiStyleEl.addEventListener('change', () => {
   renderer.aiEnricher.styleId = aiStyleEl.value;
+  if (renderer.tileStreamer.hasValidPatch && renderer.aiEnricher.autoEnrich) {
+    renderer.enrichCurrentTiles().catch(() => {});
+  }
 });
 
 aiAutoEnrichEl.addEventListener('change', () => {
   renderer.aiEnricher.autoEnrich = aiAutoEnrichEl.checked;
-  if (aiAutoEnrichEl.checked && !renderer.aiEnricher.hasKey()) {
-    aiStatusEl.textContent = 'Bitte zuerst deinen Gemini API-Key eintragen.';
+  if (aiAutoEnrichEl.checked && renderer.tileStreamer.hasValidPatch) {
+    renderer.enrichCurrentTiles().catch(() => {});
   }
 });
 
@@ -892,7 +882,7 @@ renderer.aiEnricher.onStatus = (msg) => {
 renderer.onAiTextureChange = ({ active, hasAi }) => {
   if (hasAi) {
     btnAiToggle.classList.remove('hidden');
-    btnAiToggle.textContent = active ? 'Original' : '✦ KI zeigen';
+    btnAiToggle.textContent = active ? 'Original' : '✦ Veredelt';
   } else {
     btnAiToggle.classList.add('hidden');
   }
@@ -900,16 +890,11 @@ renderer.onAiTextureChange = ({ active, hasAi }) => {
 };
 
 btnAiEnrich.addEventListener('click', async () => {
-  if (!renderer.aiEnricher.hasKey()) {
-    aiStatusEl.textContent = 'Bitte zuerst einen Gemini API-Key (AIza…) eingeben.';
-    aiApiKeyEl.focus();
-    return;
-  }
   btnAiEnrich.disabled = true;
   try {
     await renderer.enrichCurrentTiles();
   } catch (err) {
-    aiStatusEl.textContent = `Fehler: ${err.message}`;
+    aiStatusEl.textContent = `Hinweis: ${err.message}`;
   } finally {
     btnAiEnrich.disabled = false;
   }
@@ -938,7 +923,7 @@ function updateTelemetry() {
   statAlt.textContent = `ALT ${altStr} · ${latStr} ${lonStr}`;
 
   if (renderer.tileStreamer.enabled && renderer.tileStreamer.hasValidPatch && alt < 0.62) {
-    const prefix = renderer.showingAiTexture ? '✦ KI Z' : 'LIVE Z';
+    const prefix = renderer.showingAiTexture ? '✦ ENH Z' : 'LIVE Z';
     statTile.textContent = `${prefix}${renderer.tileStreamer.activeZoom}`;
     statTile.classList.remove('hidden');
   } else {
