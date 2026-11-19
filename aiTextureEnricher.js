@@ -45,6 +45,23 @@ export class AiTextureEnricher {
     }
   }
 
+  async loadKeyFromEnv() {
+    if (this.hasKey()) return this.apiKey;
+    try {
+      const resp = await fetch('./.env', { cache: 'no-store' });
+      if (!resp.ok) return '';
+      const text = await resp.text();
+      const match = text.match(/^\s*GEMINI_API_KEY\s*=\s*["']?([^"'\r\n]+)["']?/m);
+      if (match && match[1]) {
+        this.apiKey = match[1].trim();
+        return this.apiKey;
+      }
+    } catch {
+      // .env not present (e.g. hosted on GitHub Pages)
+    }
+    return '';
+  }
+
   setApiKey(key) {
     this.apiKey = (key || '').trim();
     try {

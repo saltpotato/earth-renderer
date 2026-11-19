@@ -848,6 +848,12 @@ const btnAiToggle = document.getElementById('btn-ai-toggle');
 const aiStatusEl = document.getElementById('ai-status');
 
 aiApiKeyEl.value = renderer.aiEnricher.apiKey;
+renderer.aiEnricher.loadKeyFromEnv().then((key) => {
+  if (key) {
+    aiApiKeyEl.value = key;
+    aiStatusEl.textContent = 'Gemini API-Key aus lokaler .env geladen — bereit!';
+  }
+});
 
 aiApiKeyEl.addEventListener('change', () => {
   renderer.aiEnricher.setApiKey(aiApiKeyEl.value);
