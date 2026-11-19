@@ -140,12 +140,12 @@ const PRESETS = {
 };
 
 const DEEP_ZOOM_TARGETS = {
-  berlin: { name: 'Berlin', lat: 52.5200, lon: 13.4050, altKm: 8 },
-  alps:   { name: 'Matterhorn', lat: 45.9763, lon: 7.6586, altKm: 12 },
-  nyc:    { name: 'New York', lat: 40.7580, lon: -73.9855, altKm: 9 },
-  canyon: { name: 'Grand Canyon', lat: 36.1069, lon: -112.1129, altKm: 18 },
-  fuji:   { name: 'Mt. Fuji', lat: 35.3606, lon: 138.7274, altKm: 16 },
-  venice: { name: 'Venedig', lat: 45.4408, lon: 12.3155, altKm: 7 },
+  alps:   { name: 'Matterhorn',   lat: 45.9763, lon: 7.6586,    altKm: 13, tiltDeg: 64, headingDeg: 22 },
+  berlin: { name: 'Berlin',       lat: 52.5200, lon: 13.4050,   altKm: 6,  tiltDeg: 36, headingDeg: 0 },
+  canyon: { name: 'Grand Canyon', lat: 36.1069, lon: -112.1129, altKm: 16, tiltDeg: 62, headingDeg: 315 },
+  nyc:    { name: 'New York',     lat: 40.7580, lon: -73.9855,  altKm: 7,  tiltDeg: 40, headingDeg: 25 },
+  fuji:   { name: 'Mt. Fuji',     lat: 35.3606, lon: 138.7274,  altKm: 18, tiltDeg: 62, headingDeg: 325 },
+  venice: { name: 'Venedig',      lat: 45.4408, lon: 12.3155,   altKm: 5,  tiltDeg: 35, headingDeg: 15 },
 };
 
 const canvas = document.getElementById('viewport');
@@ -187,6 +187,9 @@ try {
 // Sliders & Controls Binding
 // ---------------------------------------------------------------------------
 const sliderBindings = [
+  { id: 'cam-tilt', valId: 'val-tilt', key: 'camTiltDeg', fmt: (v) => `${Math.round(v)}°` },
+  { id: 'cam-heading', valId: 'val-heading', key: 'camHeadingDeg', fmt: (v) => `${Math.round(v)}°` },
+  { id: 'terrain-exag', valId: 'val-terrain-exag', key: 'terrainExag', fmt: (v) => `${v.toFixed(1)}×` },
   { id: 'moon-angle', valId: 'val-moon-angle', key: 'moonAngleDeg', fmt: (v) => `${Math.round(v)}°` },
   { id: 'moon-dist', valId: 'val-moon-dist', key: 'moonDist', fmt: (v) => `${v.toFixed(1)} R⊕` },
   { id: 'aurora-intensity', valId: 'val-aurora', key: 'auroraIntensity', fmt: (v) => v.toFixed(2) },
@@ -244,6 +247,54 @@ document.getElementById('tile-stream-enabled').addEventListener('change', (e) =>
   updateTelemetry();
 });
 
+// Nominatim Place / Address Geocoding Search
+const searchForm = document.getElementById('place-search-form');
+const searchInput = document.getElementById('place-search');
+const searchStatus = document.getElementById('search-status');
+
+searchForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = searchInput.value.trim();
+  if (!q) return;
+
+  searchStatus.textContent = `Suche „${q}“…`;
+  searchStatus.classList.remove('hidden');
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
+    const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const results = await resp.json();
+    if (!results || results.length === 0) {
+      searchStatus.textContent = `Kein Ort für „${q}“ gefunden.`;
+      return;
+    }
+
+    const hit = results[0];
+    const lat = parseFloat(hit.lat);
+    const lon = parseFloat(hit.lon);
+    // Estimate smart landing altitude from bounding box size
+    let altKm = 6;
+    if (Array.isArray(hit.boundingbox) && hit.boundingbox.length === 4) {
+      const dLatKm = Math.abs(parseFloat(hit.boundingbox[1]) - parseFloat(hit.boundingbox[0])) * 111;
+      const dLonKm = Math.abs(parseFloat(hit.boundingbox[3]) - parseFloat(hit.boundingbox[2])) * 111 * Math.cos((lat * Math.PI) / 180);
+      const spanKm = Math.max(dLatKm, dLonKm);
+      altKm = Math.max(1.2, Math.min(32, spanKm * 1.35));
+    }
+
+    const shortName = hit.display_name.split(',').slice(0, 2).join(',');
+    searchStatus.textContent = `Flug nach ${shortName} (${lat.toFixed(2)}°, ${lon.toFixed(2)}°)`;
+
+    if (renderer.mode !== 'live') exitRenderView();
+    renderer.tileStreamer.enabled = true;
+    document.getElementById('tile-stream-enabled').checked = true;
+    const isPeak = /peak|mountain|volcano|glacier|canyon|alps/i.test(`${hit.type} ${hit.class} ${hit.display_name}`);
+    renderer.flyToLocation(lat, lon, altKm, 3.6, true, isPeak ? 60 : 38, 0);
+  } catch (err) {
+    searchStatus.textContent = `Suche fehlgeschlagen (${err.message}).`;
+  }
+});
+
 // Deep-Zoom Live Tile Destinations
 document.querySelectorAll('.zoom-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -252,7 +303,7 @@ document.querySelectorAll('.zoom-btn').forEach((btn) => {
     if (renderer.mode !== 'live') exitRenderView();
     renderer.tileStreamer.enabled = true;
     document.getElementById('tile-stream-enabled').checked = true;
-    renderer.flyToLocation(t.lat, t.lon, t.altKm, 3.6, true);
+    renderer.flyToLocation(t.lat, t.lon, t.altKm, 3.6, true, t.tiltDeg ?? 0, t.headingDeg ?? 0);
   });
 });
 
@@ -265,6 +316,8 @@ document.querySelectorAll('.preset-btn[data-preset]').forEach((btn) => {
     renderer.cancelFlight();
     Object.assign(renderer.state, {
       ...p,
+      camTiltDeg: 0,
+      camHeadingDeg: 0,
       camTargetOffset: [...p.camTargetOffset],
     });
     syncSlidersFromState();
@@ -434,13 +487,23 @@ btnDownloadVideo.addEventListener('click', () => renderer.downloadLastVideo());
 // Interactive Orbit Camera & Sun Drag
 // ---------------------------------------------------------------------------
 let isDragging = false;
+let dragMode = 'pan'; // 'pan' | 'tilt' | 'sun'
 let lastX = 0;
 let lastY = 0;
+
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 canvas.addEventListener('pointerdown', (e) => {
   if (renderer.mode !== 'live') return;
   renderer.cancelFlight();
   isDragging = true;
+  if (e.shiftKey) {
+    dragMode = 'sun';
+  } else if (e.button === 2 || e.altKey) {
+    dragMode = 'tilt';
+  } else {
+    dragMode = 'pan';
+  }
   lastX = e.clientX;
   lastY = e.clientY;
   canvas.setPointerCapture(e.pointerId);
@@ -453,19 +516,30 @@ canvas.addEventListener('pointermove', (e) => {
   lastX = e.clientX;
   lastY = e.clientY;
 
-  if (e.shiftKey) {
+  if (dragMode === 'sun' || e.shiftKey) {
     renderer.state.sunAzDeg = ((renderer.state.sunAzDeg + dx * 0.35 + 540) % 360) - 180;
     renderer.state.sunElDeg = Math.max(-45, Math.min(45, renderer.state.sunElDeg - dy * 0.25));
     syncSlidersFromState();
+  } else if (dragMode === 'tilt' || e.altKey) {
+    // Google-Earth-style 3D Tilt & Compass Heading rotation
+    renderer.state.camHeadingDeg = (renderer.state.camHeadingDeg + dx * 0.35 + 360) % 360;
+    renderer.state.camTiltDeg = Math.max(0, Math.min(76, renderer.state.camTiltDeg - dy * 0.25));
+    syncSlidersFromState();
   } else {
-    // Smoothly scale pan speed with altitude all the way down to 180 m!
+    // Heading-aligned panning scaled smoothly with altitude down to 180 m
     const alt = Math.max(0.000028, renderer.state.camDist - 1.0);
     const speed = 0.0042 * Math.min(1.0, alt * 0.85);
     const cosLat = Math.max(0.18, Math.cos(renderer.state.camPitch));
-    renderer.state.camYaw -= (dx * speed) / cosLat;
+    const head = (renderer.state.camHeadingDeg * Math.PI) / 180;
+    const ch = Math.cos(head);
+    const sh = Math.sin(head);
+    // Rotate screen drag (dx, dy) into local (East, North)
+    const dEast = -dx * ch + dy * sh;
+    const dNorth = dx * sh + dy * ch;
+    renderer.state.camYaw += (dEast * speed) / cosLat;
     renderer.state.camPitch = Math.max(
       -Math.PI * 0.48,
-      Math.min(Math.PI * 0.48, renderer.state.camPitch + dy * speed)
+      Math.min(Math.PI * 0.48, renderer.state.camPitch + dNorth * speed)
     );
     renderer.state.camTargetOffset = [0, 0, 0];
     updateTelemetry();

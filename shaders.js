@@ -56,6 +56,7 @@ uniform int uHasCustomClouds;
 uniform vec4 uTileBounds;      // xMin, yMin, gridSize, nTiles
 uniform vec4 uTileRef;         // refLonRad, refLatRad, cosRefLat, sinRefLat (float64 origin)
 uniform float uTileBlend;      // 0..1 blend weight for dynamic satellite/DEM patch
+uniform float uTerrainExag;    // 0 = flat sphere + bump, 1..4 = true 3D DEM raymarched mountains!
 
 uniform sampler2D uDayTex;
 uniform sampler2D uNightTex;
@@ -185,6 +186,81 @@ vec2 sphereToMercatorTileUv(vec3 n, float lonOffset, vec4 bounds) {
 
 float decodeTerrariumMeters(vec3 rgb) {
   return (rgb.r * 255.0 * 256.0 + rgb.g * 255.0 + rgb.b * (255.0 / 256.0)) - 32768.0;
+}
+
+// Zero-cancellation radial altitude above R_EARTH = 1.0 along camera ray
+float rayAltFromCam(vec3 ro, vec3 rd, float camAlt, float t) {
+  vec3 p = ro + rd * t;
+  float r2Minus1 = camAlt * (camAlt + 2.0) + t * (2.0 * dot(ro, rd) + t);
+  return r2Minus1 / (length(p) + 1.0);
+}
+
+// Sample 3D DEM height in Earth-radii units (0 outside active tile patch)
+float sampleTerrainHeightRadii(vec3 n) {
+  vec2 tuv = sphereToMercatorTileUv(n, uEarthRot, uTileBounds);
+  if (tuv.x <= 0.002 || tuv.x >= 0.998 || tuv.y <= 0.002 || tuv.y >= 0.998) {
+    return 0.0;
+  }
+  float fx = smoothstep(0.002, 0.08, tuv.x) * smoothstep(0.998, 0.92, tuv.x);
+  float fy = smoothstep(0.002, 0.08, tuv.y) * smoothstep(0.998, 0.92, tuv.y);
+  float meters = max(0.0, decodeTerrariumMeters(textureLod(uTileDemTex, tuv, 0.0).rgb));
+  return (meters / 6371000.0) * uTerrainExag * fx * fy * uTileBlend;
+}
+
+// 3D Heightfield Raymarching over the spherical DEM shell (returns hit t, or -1.0 if miss)
+float raymarchTerrain3D(vec3 ro, vec3 rd, float camAlt, float tStart, float tEnd, float jitter) {
+  if (tEnd <= tStart) return -1.0;
+  float maxMarch = min(tEnd - tStart, 0.045);
+  int steps = (uHighQuality == 1) ? 72 : 40;
+  float dt = maxMarch / float(steps);
+
+  float tPrev = tStart;
+  for (int i = 0; i < 72; i++) {
+    if (i >= steps) break;
+    float t = tStart + (float(i) + jitter) * dt;
+    vec3 p = ro + rd * t;
+    float hRay = rayAltFromCam(ro, rd, camAlt, t);
+    float hTerr = sampleTerrainHeightRadii(normalize(p));
+
+    if (hRay <= hTerr) {
+      // 6-step binary search for sub-meter exact 3D mountain surface
+      float lo = tPrev;
+      float hi = t;
+      for (int b = 0; b < 6; b++) {
+        float mid = 0.5 * (lo + hi);
+        float hm = rayAltFromCam(ro, rd, camAlt, mid);
+        float ht = sampleTerrainHeightRadii(normalize(ro + rd * mid));
+        if (hm <= ht) {
+          hi = mid;
+        } else {
+          lo = mid;
+        }
+      }
+      return 0.5 * (lo + hi);
+    }
+    tPrev = t;
+  }
+  return -1.0;
+}
+
+// Soft 3D terrain cast shadows (mountains casting shadows across valleys!)
+float traceTerrainShadow(vec3 hitPos, float hitAlt, vec3 sunDir) {
+  if (uTerrainExag <= 0.01 || uTileBlend <= 0.05) return 1.0;
+  float dMax = 0.00145 * uTerrainExag;
+  float shadow = 1.0;
+  float t = 0.00004;
+  for (int i = 0; i < 14; i++) {
+    vec3 p = hitPos + sunDir * t;
+    float r2Minus1 = hitAlt * (hitAlt + 2.0) + t * (2.0 * dot(hitPos, sunDir) + t);
+    float hRay = r2Minus1 / (length(p) + 1.0);
+    if (hRay > dMax) break;
+    float hTerr = sampleTerrainHeightRadii(normalize(p));
+    float diff = hRay - hTerr;
+    if (diff < 0.0) return 0.14;
+    shadow = min(shadow, clamp(0.14 + (diff / (t * 0.12 + 1e-6)), 0.14, 1.0));
+    t *= 1.48;
+  }
+  return shadow;
 }
 
 vec2 intersectSphereAt(vec3 ro, vec3 rd, vec3 center, float r) {
@@ -578,17 +654,36 @@ void main() {
     ? intersectSphereAt(ro, rd, uMoonPos, uMoonRadius)
     : vec2(-1.0);
 
-  bool hitEarth = earthHit.x > 0.0;
-  bool hitMoon = moonHit.x > 0.0 && (!hitEarth || moonHit.x < earthHit.x);
-
   float jitter = (uHighQuality == 1) ? hashSeed : 0.5;
+
+  // Optional 3D Heightfield Raymarching over active AWS Terrarium DEM patch
+  float tSurface = earthHit.x;
+  bool hitTerrain3D = false;
+  if (uTerrainExag > 0.01 && uTileBlend > 0.02 && uTileBounds.w >= 16.0 && uCamAlt < 0.25) {
+    float dMaxElev = 0.00145 * uTerrainExag;
+    vec2 topHit = intersectSphereFromCam(ro, rd, uCamAlt, dMaxElev);
+    if (topHit.y > 0.0) {
+      float tStart = max(topHit.x, 0.0);
+      float tEnd = (earthHit.x > 0.0) ? earthHit.x : topHit.y;
+      float tTerr = raymarchTerrain3D(ro, rd, uCamAlt, tStart, tEnd, jitter);
+      if (tTerr > 0.0) {
+        tSurface = tTerr;
+        hitTerrain3D = true;
+      }
+    }
+  }
+
+  bool hitEarth = tSurface > 0.0;
+  bool hitMoon = moonHit.x > 0.0 && (!hitEarth || moonHit.x < tSurface);
+
   vec3 radiance = vec3(0.0);
 
   if (hitEarth && !hitMoon) {
     // -----------------------------------------------------------------------
-    // Ray hits Earth Surface
+    // Ray hits Earth Surface (or 3D Raymarched Mountain Terrain)
     // -----------------------------------------------------------------------
-    vec3 hitPos = ro + rd * earthHit.x;
+    vec3 hitPos = ro + rd * tSurface;
+    float hitAlt = hitTerrain3D ? rayAltFromCam(ro, rd, uCamAlt, tSurface) : 0.0;
     vec3 N = normalize(hitPos);
     vec3 V = -rd;
     vec2 uv = sphereToUv(N, uEarthRot);
@@ -644,9 +739,10 @@ void main() {
 
         float cosLat = max(0.2, sqrt(max(0.0, 1.0 - N.y * N.y)));
         float spanMeters = max(12.0, (4.0 * 156543.0 * cosLat) / uTileBounds.w);
-        float sx = clamp((dR - dL) / spanMeters, -2.5, 2.5);
-        float sy = clamp((dN - dS) / spanMeters, -2.5, 2.5);
-        vec3 Nlocal = normalize(N - (sx * T + sy * B) * uBumpStrength * 1.45);
+        float slopeBoost = hitTerrain3D ? max(uTerrainExag, 1.0) : (uBumpStrength * 1.45);
+        float sx = clamp(((dR - dL) / spanMeters) * slopeBoost, -3.5, 3.5);
+        float sy = clamp(((dN - dS) / spanMeters) * slopeBoost, -3.5, 3.5);
+        vec3 Nlocal = normalize(N - (sx * T + sy * B));
         Nsurf = normalize(mix(Nglobal, Nlocal, tileMask));
       } else {
         Nsurf = Nglobal;
@@ -678,10 +774,13 @@ void main() {
       }
     }
 
+    // Real 3D mountain self-shadowing across valleys
+    float terrainShadow = hitTerrain3D ? traceTerrainShadow(hitPos, hitAlt, sunDir) : 1.0;
+
     float NdotL = max(dot(Nsurf, sunDir), 0.0);
     float macroNdotL = dot(N, sunDir);
     float horizonVis = smoothstep(-0.04, 0.06, macroNdotL);
-    vec3 directLight = vec3(3.85) * sunTrans * cloudShadowFactor * horizonVis;
+    vec3 directLight = vec3(3.85) * sunTrans * cloudShadowFactor * terrainShadow * horizonVis;
 
     float lum = dot(dayAlbedo, vec3(0.2126, 0.7152, 0.0722));
     vec3 vividAlbedo = mix(vec3(lum), dayAlbedo, mix(1.12, 1.28, landMask));
@@ -689,7 +788,9 @@ void main() {
 
     vec3 diffuse = (vividAlbedo / PI) * NdotL * directLight;
     vec3 skyAmbient = vec3(0.014, 0.032, 0.075) * uAtmoDensity * smoothstep(-0.14, 0.35, macroNdotL);
-    vec3 surfColor = diffuse + vividAlbedo * skyAmbient * (0.35 + 0.65 * cloudShadowFactor);
+    // Slightly richer sky-fill in shadowed alpine valleys when zoomed into 3D terrain
+    float valleyFill = hitTerrain3D ? 1.85 : 1.0;
+    vec3 surfColor = diffuse + vividAlbedo * skyAmbient * valleyFill * (0.35 + 0.65 * cloudShadowFactor);
 
     if (oceanMask > 0.01 && uOceanSpec > 0.001 && NdotL > 0.0) {
       vec3 H = normalize(V + sunDir);
@@ -714,7 +815,7 @@ void main() {
     }
 
     // Elevated 3D Cloud Layer
-    if (uCloudCover > 0.01 && cloudHit.x > 0.0 && cloudHit.x < earthHit.x) {
+    if (uCloudCover > 0.01 && cloudHit.x > 0.0 && cloudHit.x < tSurface) {
       vec3 cPos = ro + rd * cloudHit.x;
       vec3 cN = normalize(cPos);
       float cDens = sampleCloudDensity(cN);
@@ -748,11 +849,11 @@ void main() {
     }
 
     float tAtmoStart = max(atmoHit.x, 0.0);
-    float tAtmoEnd = earthHit.x;
+    float tAtmoEnd = tSurface;
     vec3 inscatter, atmoTrans;
     integrateAtmosphere(ro, rd, tAtmoStart, tAtmoEnd, sunDir, atmo, jitter, inscatter, atmoTrans);
 
-    vec3 aurora = integrateAurora(ro, rd, earthHit.x, sunDir, jitter);
+    vec3 aurora = integrateAurora(ro, rd, tSurface, sunDir, jitter);
     radiance = surfColor * atmoTrans + inscatter + aurora;
   } else {
     // -----------------------------------------------------------------------

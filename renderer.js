@@ -160,7 +160,7 @@ export class EarthRaytracer {
       'uBumpStrength', 'uOceanSpec', 'uNightLights', 'uStarsIntensity', 'uAuroraIntensity',
       'uMoonEnabled', 'uMoonPos', 'uMoonRadius',
       'uSampleIndex', 'uHighQuality', 'uHasCustomClouds',
-      'uTileBounds', 'uTileRef', 'uTileBlend',
+      'uTileBounds', 'uTileRef', 'uTileBlend', 'uTerrainExag',
       'uDayTex', 'uNightTex', 'uBrcTex', 'uCloudTex', 'uMoonTex', 'uTileSatTex', 'uTileDemTex',
     ]);
     this.uDisp = this._getUniforms(this.displayProgram, [
@@ -197,6 +197,8 @@ export class EarthRaytracer {
       camYaw: 0.28,
       camPitch: 0.44,
       camDist: 3.45,
+      camTiltDeg: 0,
+      camHeadingDeg: 0,
       camTargetOffset: [0, 0, 0],
       fovDeg: 38,
 
@@ -211,6 +213,7 @@ export class EarthRaytracer {
       cloudCover: 0.90,
       cloudShadow: 0.85,
       bumpStrength: 1.35,
+      terrainExag: 1.60,
       oceanSpec: 1.15,
       nightLights: 1.65,
       starsIntensity: 1.10,
@@ -423,38 +426,101 @@ export class EarthRaytracer {
   }
 
   _computeCameraBasis() {
-    const { camYaw, camPitch, camDist, camTargetOffset } = this.state;
+    const { camYaw, camPitch, camDist, camTiltDeg, camHeadingDeg, camTargetOffset } = this.state;
     const cp = Math.cos(camPitch);
     const sp = Math.sin(camPitch);
     const sy = Math.sin(camYaw);
     const cy = Math.cos(camYaw);
 
+    // Ground point unit normal G on unit sphere
+    const gx = cp * sy;
+    const gy = sp;
+    const gz = cp * cy;
+    const alt = Math.max(0.000028, camDist - 1.0);
+
+    // If camTargetOffset is non-zero (e.g. ISS horizon preset), keep classic offset orbit
+    const hasOffset =
+      camTargetOffset[0] !== 0 || camTargetOffset[1] !== 0 || camTargetOffset[2] !== 0;
+
+    if (hasOffset && Math.abs(camTiltDeg) < 0.01 && Math.abs(camHeadingDeg) < 0.01) {
+      const pos = [camDist * gx, camDist * gy, camDist * gz];
+      let fx = camTargetOffset[0] - pos[0];
+      let fy = camTargetOffset[1] - pos[1];
+      let fz = camTargetOffset[2] - pos[2];
+      const fl = Math.hypot(fx, fy, fz) || 1;
+      fx /= fl; fy /= fl; fz /= fl;
+
+      let rx = -fz;
+      let ry = 0;
+      let rz = fx;
+      const rl = Math.hypot(rx, ry, rz) || 1;
+      rx /= rl; ry /= rl; rz /= rl;
+
+      const ux = ry * fz - rz * fy;
+      const uy = rz * fx - rx * fz;
+      const uz = rx * fy - ry * fx;
+
+      return { pos, camAlt: alt, forward: [fx, fy, fz], right: [rx, ry, rz], up: [ux, uy, uz] };
+    }
+
+    // Local tangent frame at ground point G: East (E) and North (No)
+    let ex = gz;
+    let ey = 0;
+    let ez = -gx;
+    const el = Math.hypot(ex, ey, ez) || 1;
+    ex /= el; ez /= el;
+
+    // North = cross(G, E)
+    const nx = gy * ez - gz * ey;
+    const ny = gz * ex - gx * ez;
+    const nz = gx * ey - gy * ex;
+
+    const head = (camHeadingDeg * Math.PI) / 180;
+    const tilt = (Math.max(0, Math.min(78, camTiltDeg)) * Math.PI) / 180;
+    const ch = Math.cos(head);
+    const sh = Math.sin(head);
+    const ct = Math.cos(tilt);
+    const st = Math.sin(tilt);
+
+    // Horizontal look direction H on tangent plane
+    const hx = ch * nx + sh * ex;
+    const hy = ch * ny + sh * ey;
+    const hz = ch * nz + sh * ez;
+
+    // Vector from ground point G to camera
+    const dcx = ct * gx - st * hx;
+    const dcy = ct * gy - st * hy;
+    const dcz = ct * gz - st * hz;
+
     const pos = [
-      camDist * cp * sy,
-      camDist * sp,
-      camDist * cp * cy,
+      gx + dcx * alt,
+      gy + dcy * alt,
+      gz + dcz * alt,
     ];
 
-    const target = camTargetOffset;
-    let fx = target[0] - pos[0];
-    let fy = target[1] - pos[1];
-    let fz = target[2] - pos[2];
-    const fl = Math.hypot(fx, fy, fz) || 1;
-    fx /= fl; fy /= fl; fz /= fl;
+    // Exact float64 radial altitude |pos| - 1 without catastrophic cancellation
+    const q = 2 * alt * ct + alt * alt;
+    const camAlt = q / (Math.sqrt(1 + q) + 1);
 
-    const upRef = [0, 1, 0];
-    let rx = fy * upRef[2] - fz * upRef[1];
-    let ry = fz * upRef[0] - fx * upRef[2];
-    let rz = fx * upRef[1] - fy * upRef[0];
+    const fx = -dcx;
+    const fy = -dcy;
+    const fz = -dcz;
+
+    // Right = normalize(cross(H, G)) -> smooth & pole-free for all tilts 0..78 deg
+    let rx = hy * gz - hz * gy;
+    let ry = hz * gx - hx * gz;
+    let rz = hx * gy - hy * gx;
     const rl = Math.hypot(rx, ry, rz) || 1;
     rx /= rl; ry /= rl; rz /= rl;
 
+    // Up = cross(right, forward)
     const ux = ry * fz - rz * fy;
     const uy = rz * fx - rx * fz;
     const uz = rx * fy - ry * fx;
 
     return {
       pos,
+      camAlt,
       forward: [fx, fy, fz],
       right: [rx, ry, rz],
       up: [ux, uy, uz],
@@ -485,10 +551,17 @@ export class EarthRaytracer {
     return { latDeg, lonDeg, alt: this.state.camDist - 1.0 };
   }
 
-  flyToLocation(latDeg, lonDeg, targetAltKm = 8, durationSec = 4.2, startFromSpace = true) {
+  flyToLocation(
+    latDeg,
+    lonDeg,
+    targetAltKm = 8,
+    durationSec = 4.2,
+    startFromSpace = true,
+    targetTiltDeg = 0,
+    targetHeadingDeg = 0
+  ) {
     const targetPitch = (latDeg * Math.PI) / 180;
     const targetYaw = (lonDeg * Math.PI) / 180 - this.state.earthRot;
-    // Pick shortest angular path for yaw
     let deltaYaw = targetYaw - this.state.camYaw;
     while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
     while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
@@ -498,7 +571,6 @@ export class EarthRaytracer {
       : Math.max(0.000028, this.state.camDist - 1.0);
     const endAlt = Math.max(0.000028, targetAltKm / 6371);
 
-    // Position sun at a flattering oblique angle (~38 deg west of target) for dramatic DEM relief
     const targetSunAz = ((((lonDeg - 42 + 180) % 360) + 360) % 360) - 180;
     const targetSunEl = Math.max(12, Math.min(34, latDeg * 0.45 + 12));
 
@@ -511,6 +583,10 @@ export class EarthRaytracer {
       endPitch: targetPitch,
       startLogAlt: Math.log(startAlt),
       endLogAlt: Math.log(endAlt),
+      startTilt: this.state.camTiltDeg,
+      endTilt: targetTiltDeg,
+      startHeading: this.state.camHeadingDeg,
+      endHeading: targetHeadingDeg,
       startSunAz: this.state.sunAzDeg,
       endSunAz: targetSunAz,
       startSunEl: this.state.sunElDeg,
@@ -530,9 +606,8 @@ export class EarthRaytracer {
     const sun = this._computeSunDir();
     const moonPos = this._computeMoonPos();
     const tanHalfFov = Math.tan(((this.state.fovDeg * Math.PI) / 180) * 0.5);
-    const camAlt = Math.max(0.00002, this.state.camDist - 1.0);
+    const camAlt = Math.max(0.000015, cam.camAlt);
 
-    // Smoothly blend high-res Esri+DEM tile patch as camera descends below ~3,500 km
     let tileBlend = 0.0;
     if (this.tileStreamer.enabled && this.tileStreamer.hasValidPatch && camAlt < 0.62) {
       const t = Math.max(0, Math.min(1, (0.58 - camAlt) / 0.34));
@@ -574,6 +649,7 @@ export class EarthRaytracer {
     gl.uniform4fv(this.uRay.uTileBounds, this.tileStreamer.activeBounds);
     gl.uniform4fv(this.uRay.uTileRef, this.tileStreamer.activeRef);
     gl.uniform1f(this.uRay.uTileBlend, tileBlend);
+    gl.uniform1f(this.uRay.uTerrainExag, this.state.terrainExag);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.textures.day);
@@ -726,10 +802,15 @@ export class EarthRaytracer {
         this.flight.elapsed += dt;
         const p = Math.min(1, this.flight.elapsed / this.flight.duration);
         const s = p * p * (3 - 2 * p);
+        // Ease tilt in mostly during the second half of the descent for a cinematic swoop!
+        const tiltEase = Math.max(0, Math.min(1, (p - 0.35) / 0.65));
+        const ts = tiltEase * tiltEase * (3 - 2 * tiltEase);
         this.state.camYaw = this.flight.startYaw + (this.flight.endYaw - this.flight.startYaw) * s;
         this.state.camPitch = this.flight.startPitch + (this.flight.endPitch - this.flight.startPitch) * s;
         const logAlt = this.flight.startLogAlt + (this.flight.endLogAlt - this.flight.startLogAlt) * s;
         this.state.camDist = 1.0 + Math.exp(logAlt);
+        this.state.camTiltDeg = this.flight.startTilt + (this.flight.endTilt - this.flight.startTilt) * ts;
+        this.state.camHeadingDeg = this.flight.startHeading + (this.flight.endHeading - this.flight.startHeading) * s;
         this.state.sunAzDeg = this.flight.startSunAz + (this.flight.endSunAz - this.flight.startSunAz) * s;
         this.state.sunElDeg = this.flight.startSunEl + (this.flight.endSunEl - this.flight.startSunEl) * s;
         if (this.onFlightUpdate) this.onFlightUpdate();

@@ -141,24 +141,54 @@
           </button>
         </section>
 
-        <!-- Deep-Zoom Live Tile Destinations -->
+        <!-- Deep-Zoom Live Tile Destinations, Search & 3D Terrain -->
         <section class="section deepzoom-section">
-          <h3>Deep-Zoom (Live-Kacheln)</h3>
+          <h3>Deep-Zoom &amp; 3D-Terrain</h3>
+          <form id="place-search-form" class="search-row">
+            <input
+              type="text"
+              id="place-search"
+              placeholder="Ort suchen (z. B. Zugspitze, Paris)…"
+              autocomplete="off"
+            />
+            <button type="submit" class="btn btn-search">Flug</button>
+          </form>
+          <p id="search-status" class="hint hidden"></p>
+
           <label class="checkbox-row">
             <input type="checkbox" id="tile-stream-enabled" checked />
-            <span>Esri Satellit + AWS Höhen-DEM</span>
+            <span>Esri Satellit + AWS 3D-DEM</span>
           </label>
           <div class="preset-grid">
+            <button class="preset-btn zoom-btn" data-zoom="alps">Alpen 3D (Matterhorn)</button>
             <button class="preset-btn zoom-btn" data-zoom="berlin">Berlin</button>
-            <button class="preset-btn zoom-btn" data-zoom="alps">Alpen / Matterhorn</button>
+            <button class="preset-btn zoom-btn" data-zoom="canyon">Grand Canyon 3D</button>
             <button class="preset-btn zoom-btn" data-zoom="nyc">New York</button>
-            <button class="preset-btn zoom-btn" data-zoom="canyon">Grand Canyon</button>
-            <button class="preset-btn zoom-btn" data-zoom="fuji">Mt. Fuji / Tokio</button>
+            <button class="preset-btn zoom-btn" data-zoom="fuji">Mt. Fuji 3D</button>
             <button class="preset-btn zoom-btn" data-zoom="venice">Venedig</button>
           </div>
-          <p class="hint">
-            Klicke ein Ziel für den Deep-Zoom-Flug (oder zoome beliebig tief bis 180 m Höhe / Z19).
-          </p>
+
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Kamera-Tilt (Horizont)</span>
+              <span class="mono" id="val-tilt">0°</span>
+            </div>
+            <input type="range" id="cam-tilt" min="0" max="76" step="1" value="0" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Kompass (Heading)</span>
+              <span class="mono" id="val-heading">0°</span>
+            </div>
+            <input type="range" id="cam-heading" min="0" max="360" step="1" value="0" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>3D-Terrain-Höhe (DEM)</span>
+              <span class="mono" id="val-terrain-exag">1.6×</span>
+            </div>
+            <input type="range" id="terrain-exag" min="0.0" max="3.5" step="0.1" value="1.6" />
+          </div>
         </section>
 
         <!-- Camera Presets -->
@@ -353,11 +383,13 @@
     <footer class="hud-footer">
       <span>Ziehen: Orbit</span>
       <span>·</span>
-      <span>Scrollen: Zoom</span>
+      <span>Rechtsklick / ⌥ + Ziehen: 3D-Tilt</span>
       <span>·</span>
-      <span>Shift + Ziehen: Sonne drehen</span>
+      <span>Pinch / Scroll: Deep Zoom (180 m)</span>
       <span>·</span>
-      <span>R: Raytrace Render</span>
+      <span>Shift + Ziehen: Sonne</span>
+      <span>·</span>
+      <span>R: Raytrace</span>
     </footer>
   </div>
 
