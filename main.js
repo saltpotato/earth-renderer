@@ -479,16 +479,49 @@ canvas.addEventListener('pointerup', (e) => {
   }
 });
 
+function applyZoomScale(factor) {
+  const alt = renderer.state.camDist - 1.0;
+  // Allow zooming from 35,000 km all the way down to 1.5 km altitude
+  const newAlt = Math.max(0.00024, Math.min(5.5, alt * factor));
+  renderer.state.camDist = 1.0 + newAlt;
+  updateTelemetry();
+}
+
 canvas.addEventListener('wheel', (e) => {
   if (renderer.mode !== 'live') return;
   e.preventDefault();
   renderer.cancelFlight();
-  const zoomFactor = Math.exp(e.deltaY * 0.0012);
-  const alt = renderer.state.camDist - 1.0;
-  // Allow zooming from 35,000 km all the way down to 1.5 km altitude!
-  const newAlt = Math.max(0.00024, Math.min(5.5, alt * zoomFactor));
+
+  let dy = e.deltaY;
+  if (e.deltaMode === 1) dy *= 16; // line mode -> px
+
+  // macOS trackpad pinch-to-zoom sends wheel events with ctrlKey=true and tiny deltaY (±1..3)
+  const sensitivity = e.ctrlKey ? 0.014 : 0.0022;
+  const clamped = Math.max(-250, Math.min(250, dy));
+  applyZoomScale(Math.exp(clamped * sensitivity));
+}, { passive: false });
+
+// Native Safari macOS trackpad pinch gestures
+let gestureStartAlt = null;
+canvas.addEventListener('gesturestart', (e) => {
+  e.preventDefault();
+  if (renderer.mode !== 'live') return;
+  renderer.cancelFlight();
+  gestureStartAlt = renderer.state.camDist - 1.0;
+}, { passive: false });
+
+canvas.addEventListener('gesturechange', (e) => {
+  e.preventDefault();
+  if (renderer.mode !== 'live' || gestureStartAlt === null) return;
+  const scale = Math.max(0.1, e.scale || 1);
+  const newAlt = Math.max(0.00024, Math.min(5.5, gestureStartAlt / Math.pow(scale, 2.2)));
   renderer.state.camDist = 1.0 + newAlt;
   updateTelemetry();
+}, { passive: false });
+
+canvas.addEventListener('gestureend', (e) => {
+  e.preventDefault();
+  gestureStartAlt = null;
 }, { passive: false });
 
 window.addEventListener('keydown', (e) => {
@@ -497,6 +530,12 @@ window.addEventListener('keydown', (e) => {
     startRaytraceRender();
   } else if (e.key === 'Escape' && renderer.mode !== 'live') {
     exitRenderView();
+  } else if ((e.key === '+' || e.key === '=') && renderer.mode === 'live') {
+    renderer.cancelFlight();
+    applyZoomScale(0.72);
+  } else if (e.key === '-' && renderer.mode === 'live') {
+    renderer.cancelFlight();
+    applyZoomScale(1.38);
   }
 });
 
