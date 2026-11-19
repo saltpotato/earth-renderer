@@ -5,4 +5,5 @@
 textures/*.jpg
 textures/*.png
 textures/*.tif
+textures/ai_cache/
 !textures/.gitkeep

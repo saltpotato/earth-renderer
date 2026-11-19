@@ -200,24 +200,32 @@ export class EarthRaytracer {
       this.currentPatchKey = patchKey;
       this._uploadTexture(this.textures.tileDem, demCanvas, true, false);
 
-      const cachedAi = this.aiEnricher.getCached(patchKey);
-      if (cachedAi) {
-        this._uploadTexture(this.textures.tileSat, cachedAi, true, true);
+      const ramAi = this.aiEnricher.getCached(patchKey);
+      if (ramAi) {
+        this._uploadTexture(this.textures.tileSat, ramAi, true, true);
         this.showingAiTexture = true;
-      } else {
-        this._uploadTexture(this.textures.tileSat, satCanvas, true, true);
-        this.showingAiTexture = false;
-        if (this.aiEnricher.autoEnrich && this.aiEnricher.hasKey()) {
-          this.enrichCurrentTiles().catch(() => {});
-        }
+        if (this.onTileStatusChange) this.onTileStatusChange({ zoom, loading: false, ai: true });
+        if (this.onAiTextureChange) this.onAiTextureChange({ active: true, hasAi: true });
+        return;
       }
 
-      if (this.onTileStatusChange) {
-        this.onTileStatusChange({ zoom, loading: false, ai: this.showingAiTexture });
-      }
-      if (this.onAiTextureChange) {
-        this.onAiTextureChange({ active: this.showingAiTexture, hasAi: Boolean(cachedAi) });
-      }
+      // Show raw Esri immediately while checking persistent IndexedDB / Disk cache asynchronously
+      this._uploadTexture(this.textures.tileSat, satCanvas, true, true);
+      this.showingAiTexture = false;
+      if (this.onTileStatusChange) this.onTileStatusChange({ zoom, loading: false, ai: false });
+      if (this.onAiTextureChange) this.onAiTextureChange({ active: false, hasAi: false });
+
+      this.aiEnricher.getCachedAsync(patchKey).then((persistedAi) => {
+        if (this.currentPatchKey !== patchKey) return;
+        if (persistedAi) {
+          this._uploadTexture(this.textures.tileSat, persistedAi, true, true);
+          this.showingAiTexture = true;
+          if (this.onTileStatusChange) this.onTileStatusChange({ zoom, loading: false, ai: true });
+          if (this.onAiTextureChange) this.onAiTextureChange({ active: true, hasAi: true });
+        } else if (this.aiEnricher.autoEnrich && this.aiEnricher.hasKey()) {
+          this.enrichCurrentTiles().catch(() => {});
+        }
+      });
     });
 
     // Smooth Deep-Zoom flight animation state

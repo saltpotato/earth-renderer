@@ -845,6 +845,8 @@ const aiStyleEl = document.getElementById('ai-style');
 const aiAutoEnrichEl = document.getElementById('ai-auto-enrich');
 const btnAiEnrich = document.getElementById('btn-ai-enrich');
 const btnAiToggle = document.getElementById('btn-ai-toggle');
+const aiCacheInfoEl = document.getElementById('ai-cache-info');
+const btnAiClearCache = document.getElementById('btn-ai-clear-cache');
 const aiStatusEl = document.getElementById('ai-status');
 
 aiApiKeyEl.value = renderer.aiEnricher.apiKey;
@@ -853,6 +855,16 @@ renderer.aiEnricher.loadKeyFromEnv().then((key) => {
     aiApiKeyEl.value = key;
     aiStatusEl.textContent = 'Gemini API-Key aus lokaler .env geladen — bereit!';
   }
+});
+
+renderer.aiEnricher.onCacheStatsChange = ({ count, disk }) => {
+  const mode = disk ? 'Disk + IDB' : 'Browser-IDB';
+  aiCacheInfoEl.textContent = `Cache: ${count} KI-Patches (${mode})`;
+};
+renderer.aiEnricher.initPersistentCache();
+
+btnAiClearCache.addEventListener('click', () => {
+  renderer.aiEnricher.clearAllCache();
 });
 
 aiApiKeyEl.addEventListener('change', () => {

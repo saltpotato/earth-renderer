@@ -1,9 +1,10 @@
 // Gemini Image API (gemini-2.5-flash-image) Satellite Texture Enricher
-// Enhances streamed Esri satellite tile patches in-place with photorealistic micro-detail
-// while strictly preserving top-down orthophoto geometry (coastlines, rivers, ridges, roads).
+// 3-Tier Persistent Cache: RAM -> IndexedDB -> Local Disk (textures/ai_cache/ via server.py)
 
 const STORAGE_KEY = 'terra_gemini_api_key';
 const MODEL_ID = 'gemini-2.5-flash-image';
+const IDB_NAME = 'terra_ai_textures_v1';
+const IDB_STORE = 'patches';
 
 export const AI_STYLES = {
   photoreal: {
@@ -23,6 +24,105 @@ export const AI_STYLES = {
   },
 };
 
+function sanitizeCacheFilename(cacheKey) {
+  return `${cacheKey.replace(/[^a-zA-Z0-9_-]/g, '_')}.png`;
+}
+
+function base64ToBlob(base64Data, mimeType) {
+  const bin = atob(base64Data);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
+function blobToImage(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Gecachtes KI-Bild konnte nicht dekodiert werden.'));
+    };
+    img.src = url;
+  });
+}
+
+class TextureIDB {
+  constructor() {
+    this._dbPromise = null;
+  }
+
+  _open() {
+    if (this._dbPromise) return this._dbPromise;
+    this._dbPromise = new Promise((resolve) => {
+      if (typeof indexedDB === 'undefined') {
+        resolve(null);
+        return;
+      }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+    return this._dbPromise;
+  }
+
+  async get(key) {
+    const db = await this._open();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  }
+
+  async set(key, blob) {
+    const db = await this._open();
+    if (!db) return;
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(blob, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  }
+
+  async count() {
+    const db = await this._open();
+    if (!db) return 0;
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).count();
+      req.onsuccess = () => resolve(req.result || 0);
+      req.onerror = () => resolve(0);
+    });
+  }
+
+  async clear() {
+    const db = await this._open();
+    if (!db) return;
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  }
+}
+
 export class AiTextureEnricher {
   constructor() {
     this.apiKey = this._loadKey();
@@ -30,11 +130,44 @@ export class AiTextureEnricher {
     this.styleId = 'photoreal';
     this.model = MODEL_ID;
 
-    this.cache = new Map(); // key -> HTMLImageElement
-    this.maxCache = 24;
+    this.cache = new Map(); // RAM LRU: cacheKey -> HTMLImageElement
+    this.maxCache = 32;
+    this.idb = new TextureIDB();
+    this.diskCacheSupported = false;
+    this.diskFiles = new Set(); // Known filenames in textures/ai_cache/
+    this.cachedCount = 0;
+
     this.isBusy = false;
-    this._pending = null; // latest queued job if autoEnrich fires while busy
+    this._pending = null;
     this.onStatus = null;
+    this.onCacheStatsChange = null;
+  }
+
+  async initPersistentCache() {
+    // Check if local server.py disk cache API is available
+    try {
+      const resp = await fetch('/api/ai-cache', { cache: 'no-store' });
+      if (resp.ok) {
+        const data = await resp.json();
+        this.diskCacheSupported = true;
+        this.diskFiles = new Set(data.files || []);
+      }
+    } catch {
+      this.diskCacheSupported = false;
+    }
+
+    await this._refreshCacheStats();
+  }
+
+  async _refreshCacheStats() {
+    const idbCount = await this.idb.count();
+    this.cachedCount = Math.max(idbCount, this.diskFiles.size, this.cache.size);
+    if (this.onCacheStatsChange) {
+      this.onCacheStatsChange({
+        count: this.cachedCount,
+        disk: this.diskCacheSupported,
+      });
+    }
   }
 
   _loadKey() {
@@ -79,17 +212,97 @@ export class AiTextureEnricher {
     return this.apiKey.length > 10;
   }
 
-  getCached(patchKey) {
-    return this.cache.get(`${this.styleId}:${patchKey}`) || null;
+  _makeKey(patchKey) {
+    return `${this.styleId}:${patchKey}`;
   }
 
-  _setCache(cacheKey, img) {
+  getCached(patchKey) {
+    return this.cache.get(this._makeKey(patchKey)) || null;
+  }
+
+  /**
+   * Checks RAM -> IndexedDB -> Local Disk (textures/ai_cache/) for a cached AI patch.
+   */
+  async getCachedAsync(patchKey) {
+    const cacheKey = this._makeKey(patchKey);
+    const ramHit = this.cache.get(cacheKey);
+    if (ramHit) return ramHit;
+
+    // 1. Check IndexedDB
+    const idbBlob = await this.idb.get(cacheKey);
+    if (idbBlob) {
+      try {
+        const img = await blobToImage(idbBlob);
+        this._setRamCache(cacheKey, img);
+        return img;
+      } catch {
+        // corrupted blob, ignore
+      }
+    }
+
+    // 2. Check local disk cache (only if filename is in known diskFiles set -> zero 404s!)
+    const filename = sanitizeCacheFilename(cacheKey);
+    if (this.diskCacheSupported && this.diskFiles.has(filename)) {
+      try {
+        const resp = await fetch(`/api/ai-cache/${filename}`, { cache: 'no-store' });
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const img = await blobToImage(blob);
+          this._setRamCache(cacheKey, img);
+          // Mirror into IndexedDB for faster future loads
+          this.idb.set(cacheKey, blob).catch(() => {});
+          return img;
+        }
+      } catch {
+        // ignore disk fetch errors
+      }
+    }
+
+    return null;
+  }
+
+  _setRamCache(cacheKey, img) {
     if (this.cache.has(cacheKey)) this.cache.delete(cacheKey);
     this.cache.set(cacheKey, img);
     if (this.cache.size > this.maxCache) {
       const oldest = this.cache.keys().next().value;
       this.cache.delete(oldest);
     }
+  }
+
+  async _persistBlob(cacheKey, blob) {
+    await this.idb.set(cacheKey, blob);
+    if (this.diskCacheSupported) {
+      const filename = sanitizeCacheFilename(cacheKey);
+      try {
+        const resp = await fetch(`/api/ai-cache/${filename}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': blob.type || 'image/png' },
+          body: blob,
+        });
+        if (resp.ok) {
+          this.diskFiles.add(filename);
+        }
+      } catch {
+        // ignore disk write errors
+      }
+    }
+    await this._refreshCacheStats();
+  }
+
+  async clearAllCache() {
+    this.cache.clear();
+    await this.idb.clear();
+    if (this.diskCacheSupported) {
+      try {
+        await fetch('/api/ai-cache', { method: 'DELETE' });
+        this.diskFiles.clear();
+      } catch {
+        // ignore
+      }
+    }
+    await this._refreshCacheStats();
+    if (this.onStatus) this.onStatus('KI-Textur-Cache geleert.');
   }
 
   _canvasToBase64Jpeg(srcCanvas, targetSize = 1024) {
@@ -102,33 +315,19 @@ export class AiTextureEnricher {
     return dataUrl.split(',')[1];
   }
 
-  _loadBase64Image(mimeType, base64Data) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('KI-Bild konnte nicht dekodiert werden.'));
-      img.src = `data:${mimeType};base64,${base64Data}`;
-    });
-  }
-
-  /**
-   * Enrich a 2048x2048 satellite tile patch using Gemini Image API.
-   * Returns an HTMLImageElement or throws on error.
-   */
   async enrichPatch({ patchKey, satCanvas, latDeg, lonDeg, zoom }) {
+    const cacheKey = this._makeKey(patchKey);
+    const cached = await this.getCachedAsync(patchKey);
+    if (cached) {
+      if (this.onStatus) this.onStatus(`✦ Aus lokalem Cache geladen (Z${zoom})`);
+      return cached;
+    }
+
     if (!this.hasKey()) {
       throw new Error('Bitte zuerst einen Gemini API-Key eingeben.');
     }
 
-    const cacheKey = `${this.styleId}:${patchKey}`;
-    const cached = this.cache.get(cacheKey);
-    if (cached) {
-      if (this.onStatus) this.onStatus(`KI-Cache geladen (Z${zoom})`);
-      return cached;
-    }
-
     if (this.isBusy) {
-      // Coalesce rapid flight updates: keep only the latest queued patch
       this._pending = { patchKey, satCanvas, latDeg, lonDeg, zoom };
       return null;
     }
@@ -175,7 +374,7 @@ export class AiTextureEnricher {
           const errJson = await resp.json();
           if (errJson?.error?.message) detail = errJson.error.message;
         } catch {
-          // ignore parse error
+          // ignore
         }
         throw new Error(detail);
       }
@@ -184,17 +383,19 @@ export class AiTextureEnricher {
       const parts = json?.candidates?.[0]?.content?.parts || [];
       const imgPart = parts.find((p) => p.inlineData && p.inlineData.data);
       if (!imgPart) {
-        throw new Error('Gemini hat kein Bild zurückgegeben (evtl. Safety-Filter oder Modell-Limit).');
+        throw new Error('Gemini hat kein Bild zurückgegeben.');
       }
 
-      const img = await this._loadBase64Image(
-        imgPart.inlineData.mimeType || 'image/png',
-        imgPart.inlineData.data
-      );
-      this._setCache(cacheKey, img);
+      const mimeType = imgPart.inlineData.mimeType || 'image/png';
+      const blob = base64ToBlob(imgPart.inlineData.data, mimeType);
+      const img = await blobToImage(blob);
+
+      this._setRamCache(cacheKey, img);
+      await this._persistBlob(cacheKey, blob);
 
       const sec = ((performance.now() - t0) / 1000).toFixed(1);
-      if (this.onStatus) this.onStatus(`✦ KI-Textur aktiv (Z${zoom} · ${sec}s)`);
+      const loc = this.diskCacheSupported ? 'Disk + IDB' : 'Browser-Cache';
+      if (this.onStatus) this.onStatus(`✦ KI-Textur gespeichert (${loc} · Z${zoom} · ${sec}s)`);
       return img;
     } finally {
       this.isBusy = false;

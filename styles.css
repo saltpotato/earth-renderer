@@ -490,6 +490,27 @@ html, body {
   cursor: wait;
 }
 
+.ai-cache-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 10.5px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.btn-link:hover {
+  color: #fca5a5;
+}
+
 .autopilot-hud {
   position: fixed;
   bottom: 38px;
