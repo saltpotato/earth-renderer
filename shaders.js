@@ -634,6 +634,134 @@ float geometrySchlickGGX(float NdotV, float rough) {
 }
 
 // ---------------------------------------------------------------------------
+// Procedural Biome Micro-Detail Synthesis (Rocks, Forest Canopy, Snow, Soil, Ocean Waves)
+// ---------------------------------------------------------------------------
+float noise2D(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash12(i);
+  float b = hash12(i + vec2(1.0, 0.0));
+  float c = hash12(i + vec2(0.0, 1.0));
+  float d = hash12(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm2D(vec2 p) {
+  float v = 0.0;
+  float a = 0.5;
+  mat2 rot = mat2(0.80, 0.60, -0.60, 0.80);
+  for (int i = 0; i < 4; i++) {
+    v += a * noise2D(p);
+    p = rot * p * 2.07 + vec2(13.7, 29.3);
+    a *= 0.5;
+  }
+  return v;
+}
+
+void applyBiomeMicroDetail(
+  vec3 N,
+  vec3 T,
+  vec3 B,
+  vec2 tileUv,
+  float tileMask,
+  float distKm,
+  inout vec3 dayAlbedo,
+  inout vec3 Nsurf,
+  inout float oceanMask
+) {
+  if (tileMask <= 0.02 || distKm > 160.0) return;
+
+  // Distance fade so foreground/midground is razor-sharp while distant horizon stays shimmer-free
+  float nearFade = 1.0 - smoothstep(18.0, 145.0, distKm);
+  float fineFade = 1.0 - smoothstep(4.0, 48.0, distKm);
+  float w = tileMask * nearFade;
+  if (w <= 0.005) return;
+
+  float cosLat = max(0.2, sqrt(max(0.0, 1.0 - N.y * N.y)));
+  // Exact metric km coordinates within the 8x8 tile patch (zero float32 precision loss!)
+  float patchKm = (8.0 * 40075.0 * cosLat) / max(uTileBounds.w, 1.0);
+  vec2 kmPos = tileUv * patchKm;
+  float elevM = sampleTerrariumMeters(tileUv);
+  float slope = 1.0 - clamp(dot(Nsurf, N), 0.0, 1.0);
+
+  // Refine shoreline water mask using DEM elevation + marine satellite color
+  float maxRGB = max(dayAlbedo.r, max(dayAlbedo.g, dayAlbedo.b));
+  float minRGB = min(dayAlbedo.r, min(dayAlbedo.g, dayAlbedo.b));
+  float sat = (maxRGB - minRGB) / max(maxRGB, 0.001);
+  float lum = dot(dayAlbedo, vec3(0.2126, 0.7152, 0.0722));
+
+  float isMarineBlue = smoothstep(0.95, 1.25, dayAlbedo.b / max(dayAlbedo.r, 0.005)) *
+                       smoothstep(0.32, 0.05, dayAlbedo.r);
+  float localWater = smoothstep(3.0, 0.4, elevM) * isMarineBlue;
+  oceanMask = mix(oceanMask, max(oceanMask * smoothstep(8.0, 1.0, elevM), localWater), tileMask);
+
+  if (oceanMask > 0.5) {
+    // Animated 3D ocean swell + capillary ripples + subtle shoreline surf foam
+    vec2 wUv1 = kmPos * 4.5 + vec2(uTime * 0.14, uTime * 0.09);
+    vec2 wUv2 = kmPos * 14.0 - vec2(uTime * 0.22, -uTime * 0.16);
+    float h0 = fbm2D(wUv1) * 0.65 + noise2D(wUv2) * 0.35 * fineFade;
+    float hx = fbm2D(wUv1 + vec2(0.08, 0.0)) * 0.65 + noise2D(wUv2 + vec2(0.12, 0.0)) * 0.35 * fineFade;
+    float hy = fbm2D(wUv1 + vec2(0.0, 0.08)) * 0.65 + noise2D(wUv2 + vec2(0.0, 0.12)) * 0.35 * fineFade;
+    vec3 Nwave = normalize(N - ((hx - h0) * T + (hy - h0) * B) * 1.15 * w);
+    Nsurf = normalize(mix(Nsurf, Nwave, oceanMask * w));
+
+    // Crisp white surf foam right along the coastline (0m .. 2.2m elevation)
+    float shoreBand = smoothstep(0.0, 0.35, elevM) * smoothstep(2.4, 0.5, elevM);
+    float foamNoise = smoothstep(0.42, 0.78, fbm2D(kmPos * 9.0 + vec2(uTime * 0.12, 0.0)));
+    dayAlbedo = mix(dayAlbedo, vec3(0.76, 0.84, 0.90), shoreBand * foamNoise * 0.48 * w);
+    return;
+  }
+
+  // Biome classification on land
+  float isSnow   = smoothstep(0.28, 0.55, lum) * smoothstep(0.26, 0.08, sat) * smoothstep(900.0, 2200.0, elevM);
+  float isRock   = smoothstep(0.06, 0.28, slope) * (1.0 - isSnow * 0.65);
+  float isForest = smoothstep(1.01, 1.14, dayAlbedo.g / max(dayAlbedo.r, 0.005)) *
+                   smoothstep(1.04, 1.20, dayAlbedo.g / max(dayAlbedo.b, 0.005)) *
+                   (1.0 - isRock * 0.85) * (1.0 - isSnow);
+  float isSoil   = clamp(1.0 - isRock - isForest - isSnow, 0.0, 1.0);
+
+  // 1. Stratified Alpine Rock Cliffs & Crags
+  float rockMacro = fbm2D(kmPos * 2.8);
+  float strata = sin(elevM * 0.095 + rockMacro * 7.5) * 0.5 + 0.5;
+  float rockDetail = mix(rockMacro, strata, 0.45);
+  float rockFine = noise2D(kmPos * 24.0) * fineFade;
+  float rockMod = mix(0.68, 1.24, rockDetail * 0.7 + rockFine * 0.3);
+
+  // 2. Forest Canopy Micro-Texture (tree-crown stipple + canopy AO)
+  float canopyCoarse = fbm2D(kmPos * 7.5);
+  float canopyFine = noise2D(kmPos * 42.0);
+  float canopy = mix(canopyCoarse, canopyFine, 0.55 * fineFade);
+  float forestMod = mix(0.72, 1.22, canopy);
+
+  // 3. Wind-Sculpted Snow & Glacier Ridges
+  float snowDrift = fbm2D(kmPos * vec2(3.2, 8.5));
+  float snowMod = mix(0.88, 1.10, snowDrift);
+
+  // 4. Dry Plains, Savanna, Farmland & Coastal Dunes (e.g. Madagascar)
+  float soilMacro = fbm2D(kmPos * 3.8);
+  float soilFine = noise2D(kmPos * 28.0) * fineFade;
+  float soilMod = mix(0.80, 1.18, soilMacro * 0.65 + soilFine * 0.35);
+
+  // Combine biome albedo modulation (preserves real satellite colors while adding crisp detail!)
+  float totalMod = isRock * rockMod + isForest * forestMod + isSnow * snowMod + isSoil * soilMod;
+  dayAlbedo *= mix(1.0, totalMod, w * 0.85);
+
+  // Slight exposed grey-slate rock tint on very steep cliffs
+  vec3 cliffTint = vec3(0.24, 0.25, 0.27) * mix(0.75, 1.25, rockDetail);
+  dayAlbedo = mix(dayAlbedo, mix(dayAlbedo, cliffTint, 0.38), isRock * smoothstep(0.18, 0.45, slope) * w);
+
+  // High-frequency tangent-space micro-normal perturbation
+  float nFreq = mix(6.0, 22.0, isForest * 0.7 + isSoil * 0.3);
+  vec2 nPos = kmPos * nFreq;
+  float n0 = fbm2D(nPos);
+  float nx = fbm2D(nPos + vec2(0.14, 0.0));
+  float ny = fbm2D(nPos + vec2(0.0, 0.14));
+  float bumpAmp = (isRock * 1.45 + isForest * 0.95 + isSoil * 0.65 + isSnow * 0.45) * w * (0.45 + 0.55 * fineFade);
+  Nsurf = normalize(Nsurf - ((nx - n0) * T + (ny - n0) * B) * bumpAmp);
+}
+
+// ---------------------------------------------------------------------------
 // Main Raytrace Entry
 // ---------------------------------------------------------------------------
 void main() {
@@ -777,7 +905,12 @@ void main() {
       }
     }
 
-    if (oceanMask > 0.01) {
+    // Synthesize crisp procedural biome micro-detail (rocks, forests, snow, soil, ocean waves)
+    float distKm = tSurface * 6371.0;
+    applyBiomeMicroDetail(N, T, B, tileUv, tileMask, distKm, dayAlbedo, Nsurf, oceanMask);
+    landMask = 1.0 - oceanMask;
+
+    if (oceanMask > 0.01 && tileMask < 0.5) {
       vec3 wavePos = rotateY(N, uEarthRot) * 180.0;
       float w1 = valueNoise3D(wavePos) - 0.5;
       float w2 = valueNoise3D(wavePos * 2.1 + 19.3) - 0.5;
