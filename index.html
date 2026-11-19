@@ -32,6 +32,7 @@
         <span id="stat-mode" class="badge badge-live">LIVE VORSCHAU</span>
         <span id="stat-tex" class="badge badge-tex">4K CDN</span>
         <span id="stat-tile" class="badge badge-tile hidden">LIVE Z14</span>
+        <span id="stat-fps" class="mono">60 FPS</span>
         <span id="stat-res" class="mono">1280×720</span>
         <span id="stat-alt" class="mono">ALT 15.600 km</span>
       </div>
@@ -176,6 +177,44 @@
             ✈ Autopilot starten
           </button>
           <p id="ap-status" class="hint hidden"></p>
+        </section>
+
+        <!-- Gemini AI Texture Enrichment -->
+        <section class="section ai-section">
+          <h3>✨ KI-Textur-Anreicherung (Gemini)</h3>
+          <label class="field">
+            <span>Gemini API-Key (lokal gespeichert)</span>
+            <input
+              type="password"
+              id="ai-api-key"
+              class="ai-input"
+              placeholder="AIza… (Google AI Studio)"
+              autocomplete="off"
+            />
+          </label>
+          <label class="field">
+            <span>Anreicherungs-Stil</span>
+            <select id="ai-style">
+              <option value="photoreal" selected>Fotorealistisch (1:1 Satellit)</option>
+              <option value="natgeo">National Geographic (Lebendig)</option>
+              <option value="cinematic">Kino-Detail (Kontrastreich)</option>
+            </select>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" id="ai-auto-enrich" />
+            <span>Automatisch beim Kachelladen / Flug</span>
+          </label>
+          <div class="ai-btn-row">
+            <button id="btn-ai-enrich" class="btn btn-ai">
+              ✨ Kacheln anreichern
+            </button>
+            <button id="btn-ai-toggle" class="btn btn-secondary hidden" title="Original vs. KI vergleichen">
+              Vorher/Nachher
+            </button>
+          </div>
+          <p id="ai-status" class="hint">
+            Veredelt das aktive Satelliten-Patch einmalig per <code>gemini-2.5-flash-image</code> und cached es für 60-FPS-Flug.
+          </p>
         </section>
 
         <!-- Deep-Zoom Live Tile Destinations, Search & 3D Terrain -->

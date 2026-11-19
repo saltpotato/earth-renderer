@@ -1,6 +1,7 @@
 import { fullscreenVert, earthRaytraceFrag, displayFrag } from './shaders.js';
 import { DynamicTileStreamer } from './tileStreamer.js';
 import { FlightAutopilot, offsetLatLon } from './flightAutopilot.js';
+import { AiTextureEnricher } from './aiTextureEnricher.js';
 
 const CDN_TEXTURES = {
   day: [
@@ -186,13 +187,36 @@ export class EarthRaytracer {
     this.hasCustomClouds = false;
     this.textureTier = '4K CDN';
 
+    // Gemini AI Satellite Texture Enricher
+    this.aiEnricher = new AiTextureEnricher();
+    this.currentPatchKey = '';
+    this.showingAiTexture = false;
+    this.onAiTextureChange = null;
+
     // Dynamic Deep-Zoom Tile Streamer (Esri World Imagery + AWS Terrarium DEM)
     this.onTileStatusChange = null;
-    this.tileStreamer = new DynamicTileStreamer(({ satCanvas, demCanvas, zoom }) => {
-      this._uploadTexture(this.textures.tileSat, satCanvas, true, true);
+    this.tileStreamer = new DynamicTileStreamer(({ satCanvas, demCanvas, bounds, zoom }) => {
+      const patchKey = `${zoom}:${bounds[0]}:${bounds[1]}`;
+      this.currentPatchKey = patchKey;
       this._uploadTexture(this.textures.tileDem, demCanvas, true, false);
+
+      const cachedAi = this.aiEnricher.getCached(patchKey);
+      if (cachedAi) {
+        this._uploadTexture(this.textures.tileSat, cachedAi, true, true);
+        this.showingAiTexture = true;
+      } else {
+        this._uploadTexture(this.textures.tileSat, satCanvas, true, true);
+        this.showingAiTexture = false;
+        if (this.aiEnricher.autoEnrich && this.aiEnricher.hasKey()) {
+          this.enrichCurrentTiles().catch(() => {});
+        }
+      }
+
       if (this.onTileStatusChange) {
-        this.onTileStatusChange({ zoom, loading: false });
+        this.onTileStatusChange({ zoom, loading: false, ai: this.showingAiTexture });
+      }
+      if (this.onAiTextureChange) {
+        this.onAiTextureChange({ active: this.showingAiTexture, hasAi: Boolean(cachedAi) });
       }
     });
 
@@ -915,6 +939,69 @@ export class EarthRaytracer {
     this.state.fovDeg = 38;
     this.autopilot.stop();
     if (this.onAutopilotUpdate) this.onAutopilotUpdate();
+  }
+
+  async enrichCurrentTiles() {
+    if (!this.tileStreamer.hasValidPatch) {
+      const { latDeg, lonDeg, alt } = this.getCameraLatLon();
+      if (alt >= 0.62) {
+        throw new Error('Bitte zuerst näher heranzoomen (< 3.500 km) oder einen Flug starten.');
+      }
+      await this.tileStreamer.ensureReady(latDeg, lonDeg, alt, this.state.fovDeg);
+    }
+    if (!this.tileStreamer.hasValidPatch) {
+      throw new Error('Keine aktiven Satellitenkacheln geladen.');
+    }
+
+    const { latDeg, lonDeg } = this.getCameraLatLon();
+    const patchKey = this.currentPatchKey;
+    const zoom = this.tileStreamer.activeZoom;
+
+    const img = await this.aiEnricher.enrichPatch({
+      patchKey,
+      satCanvas: this.tileStreamer.satCanvas,
+      latDeg,
+      lonDeg,
+      zoom,
+    });
+
+    if (img && this.currentPatchKey === patchKey) {
+      this._uploadTexture(this.textures.tileSat, img, true, true);
+      this.showingAiTexture = true;
+      if (this.onAiTextureChange) {
+        this.onAiTextureChange({ active: true, hasAi: true });
+      }
+      if (this.onTileStatusChange) {
+        this.onTileStatusChange({ zoom, loading: false, ai: true });
+      }
+    }
+
+    // If a newer patch arrived while Gemini was working, enrich that next
+    const next = this.aiEnricher.consumePending();
+    if (next && this.aiEnricher.autoEnrich && next.patchKey === this.currentPatchKey) {
+      this.enrichCurrentTiles().catch(() => {});
+    }
+  }
+
+  toggleAiTextureView() {
+    if (!this.tileStreamer.hasValidPatch) return false;
+    const cached = this.aiEnricher.getCached(this.currentPatchKey);
+    if (!cached) return false;
+
+    if (this.showingAiTexture) {
+      this._uploadTexture(this.textures.tileSat, this.tileStreamer.satCanvas, true, true);
+      this.showingAiTexture = false;
+    } else {
+      this._uploadTexture(this.textures.tileSat, cached, true, true);
+      this.showingAiTexture = true;
+    }
+    if (this.onAiTextureChange) {
+      this.onAiTextureChange({ active: this.showingAiTexture, hasAi: true });
+    }
+    if (this.onTileStatusChange) {
+      this.onTileStatusChange({ zoom: this.tileStreamer.activeZoom, loading: false, ai: this.showingAiTexture });
+    }
+    return this.showingAiTexture;
   }
 
   tick(dt) {

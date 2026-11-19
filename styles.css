@@ -443,6 +443,53 @@ html, body {
   filter: brightness(1.12);
 }
 
+/* Gemini AI Texture Enrichment Section */
+.ai-section {
+  background: linear-gradient(160deg, rgba(16, 185, 129, 0.14), rgba(59, 130, 246, 0.08));
+  border-color: rgba(52, 211, 153, 0.34);
+}
+
+.ai-section h3 {
+  color: #6ee7b7;
+}
+
+.ai-input {
+  width: 100%;
+  background: rgba(5, 9, 18, 0.85);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  outline: none;
+  user-select: text;
+}
+
+.ai-input:focus {
+  border-color: #34d399;
+}
+
+.ai-btn-row {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-ai {
+  flex: 1;
+  background: linear-gradient(135deg, #059669, #2563eb);
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.32);
+}
+
+.btn-ai:hover {
+  filter: brightness(1.12);
+}
+
+.btn-ai:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
 .autopilot-hud {
   position: fixed;
   bottom: 38px;

@@ -155,6 +155,7 @@ const loadingTitle = document.getElementById('loading-title');
 const statMode = document.getElementById('stat-mode');
 const statTex = document.getElementById('stat-tex');
 const statTile = document.getElementById('stat-tile');
+const statFps = document.getElementById('stat-fps');
 const statRes = document.getElementById('stat-res');
 const statAlt = document.getElementById('stat-alt');
 
@@ -837,6 +838,70 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------------------------
+// Gemini AI Satellite Texture Enrichment
+// ---------------------------------------------------------------------------
+const aiApiKeyEl = document.getElementById('ai-api-key');
+const aiStyleEl = document.getElementById('ai-style');
+const aiAutoEnrichEl = document.getElementById('ai-auto-enrich');
+const btnAiEnrich = document.getElementById('btn-ai-enrich');
+const btnAiToggle = document.getElementById('btn-ai-toggle');
+const aiStatusEl = document.getElementById('ai-status');
+
+aiApiKeyEl.value = renderer.aiEnricher.apiKey;
+
+aiApiKeyEl.addEventListener('change', () => {
+  renderer.aiEnricher.setApiKey(aiApiKeyEl.value);
+});
+aiApiKeyEl.addEventListener('input', () => {
+  renderer.aiEnricher.setApiKey(aiApiKeyEl.value);
+});
+
+aiStyleEl.addEventListener('change', () => {
+  renderer.aiEnricher.styleId = aiStyleEl.value;
+});
+
+aiAutoEnrichEl.addEventListener('change', () => {
+  renderer.aiEnricher.autoEnrich = aiAutoEnrichEl.checked;
+  if (aiAutoEnrichEl.checked && !renderer.aiEnricher.hasKey()) {
+    aiStatusEl.textContent = 'Bitte zuerst deinen Gemini API-Key eintragen.';
+  }
+});
+
+renderer.aiEnricher.onStatus = (msg) => {
+  aiStatusEl.textContent = msg;
+};
+
+renderer.onAiTextureChange = ({ active, hasAi }) => {
+  if (hasAi) {
+    btnAiToggle.classList.remove('hidden');
+    btnAiToggle.textContent = active ? 'Original' : '✦ KI zeigen';
+  } else {
+    btnAiToggle.classList.add('hidden');
+  }
+  updateTelemetry();
+};
+
+btnAiEnrich.addEventListener('click', async () => {
+  if (!renderer.aiEnricher.hasKey()) {
+    aiStatusEl.textContent = 'Bitte zuerst einen Gemini API-Key (AIza…) eingeben.';
+    aiApiKeyEl.focus();
+    return;
+  }
+  btnAiEnrich.disabled = true;
+  try {
+    await renderer.enrichCurrentTiles();
+  } catch (err) {
+    aiStatusEl.textContent = `Fehler: ${err.message}`;
+  } finally {
+    btnAiEnrich.disabled = false;
+  }
+});
+
+btnAiToggle.addEventListener('click', () => {
+  renderer.toggleAiTextureView();
+});
+
+// ---------------------------------------------------------------------------
 // Telemetry & Main Loop
 // ---------------------------------------------------------------------------
 function updateTelemetry() {
@@ -855,14 +920,15 @@ function updateTelemetry() {
   statAlt.textContent = `ALT ${altStr} · ${latStr} ${lonStr}`;
 
   if (renderer.tileStreamer.enabled && renderer.tileStreamer.hasValidPatch && alt < 0.62) {
-    statTile.textContent = `LIVE Z${renderer.tileStreamer.activeZoom}`;
+    const prefix = renderer.showingAiTexture ? '✦ KI Z' : 'LIVE Z';
+    statTile.textContent = `${prefix}${renderer.tileStreamer.activeZoom}`;
     statTile.classList.remove('hidden');
   } else {
     statTile.classList.add('hidden');
   }
 
   if (renderer.mode === 'live') {
-    statRes.textContent = `${canvas.width}×${canvas.height}`;
+    statRes.textContent = `${renderer.accumWidth}×${renderer.accumHeight}`;
   }
 }
 
@@ -887,10 +953,21 @@ renderer.loadDefaultTextures((msg) => {
   statTex.className = tier.includes('8K') ? 'badge badge-tex-8k' : 'badge badge-tex';
   loadingOverlay.classList.add('hidden');
   let lastTime = performance.now();
+  let fpsFrames = 0;
+  let fpsStart = lastTime;
   const loop = (now) => {
     const dt = Math.min(0.1, (now - lastTime) / 1000);
     lastTime = now;
     renderer.tick(dt);
+
+    fpsFrames++;
+    if (now - fpsStart >= 400) {
+      const fps = Math.round((fpsFrames * 1000) / (now - fpsStart));
+      statFps.textContent = `${fps} FPS`;
+      fpsFrames = 0;
+      fpsStart = now;
+    }
+
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
