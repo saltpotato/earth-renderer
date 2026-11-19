@@ -432,6 +432,20 @@ export class EarthRaytracer {
     throw new Error('Konnte keinen WebGL2 Framebuffer erstellen.');
   }
 
+  _getLiveRenderSize() {
+    const cw = Math.max(1, this.canvas.width);
+    const ch = Math.max(1, this.canvas.height);
+    // Cap live preview internal width to 1280px for silky 60 FPS on Retina displays
+    // (Offline Raytrace & Video Export still render at full 1080p/1440p/4K!)
+    const maxLiveW = 1280;
+    if (cw <= maxLiveW) return { w: cw, h: ch };
+    const scale = maxLiveW / cw;
+    return {
+      w: Math.max(1, Math.round(cw * scale)),
+      h: Math.max(1, Math.round(ch * scale)),
+    };
+  }
+
   resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     const w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr));
@@ -441,7 +455,8 @@ export class EarthRaytracer {
       this.canvas.height = h;
     }
     if (this.mode === 'live') {
-      this._ensureAccumFbo(w, h);
+      const live = this._getLiveRenderSize();
+      this._ensureAccumFbo(live.w, live.h);
     }
   }
 
@@ -946,7 +961,8 @@ export class EarthRaytracer {
         this.tileStreamer.updateForCamera(latDeg, lonDeg, alt, this.state.fovDeg);
       }
 
-      this._ensureAccumFbo(this.canvas.width, this.canvas.height);
+      const live = this._getLiveRenderSize();
+      this._ensureAccumFbo(live.w, live.h);
       this._renderSampleToAccum(0, false);
       this._drawDisplayToTarget(null, this.canvas.width, this.canvas.height, false);
     } else if (this.mode === 'rendering') {

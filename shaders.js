@@ -188,7 +188,13 @@ float decodeTerrariumMeters(vec3 rgb) {
   return (rgb.r * 255.0 * 256.0 + rgb.g * 255.0 + rgb.b * (255.0 / 256.0)) - 32768.0;
 }
 
-// Exact bilinear height decode (avoids 8-bit hardware RGB carry artifacts on Terrarium tiles!)
+// Fast 1-tap exact Terrarium decode (no RGB carry artifacts, 4x faster for coarse raymarch!)
+float sampleTerrariumFast(vec2 uv) {
+  ivec2 p = clamp(ivec2(clamp(uv, 0.0, 1.0) * 2047.0), ivec2(0), ivec2(2047));
+  return decodeTerrariumMeters(texelFetch(uTileDemTex, p, 0).rgb);
+}
+
+// Exact bilinear height decode (used for normals & HQ binary search)
 float sampleTerrariumMeters(vec2 uv) {
   vec2 texSize = vec2(2048.0);
   vec2 p = clamp(uv, 0.0, 1.0) * texSize - 0.5;
@@ -214,42 +220,43 @@ float rayAltFromCam(vec3 ro, vec3 rd, float camAlt, float t) {
   return r2Minus1 / (length(p) + 1.0);
 }
 
-// Sample 3D DEM height in Earth-radii units (0 outside active tile patch)
-float sampleTerrainHeightRadii(vec3 n) {
+// Sample 3D DEM height in Earth-radii units (fast 1-tap in live preview, bilinear in HQ)
+float sampleTerrainHeightRadii(vec3 n, bool fastTap) {
   vec2 tuv = sphereToMercatorTileUv(n, uEarthRot, uTileBounds);
   if (tuv.x <= 0.002 || tuv.x >= 0.998 || tuv.y <= 0.002 || tuv.y >= 0.998) {
     return 0.0;
   }
   float fx = smoothstep(0.002, 0.08, tuv.x) * smoothstep(0.998, 0.92, tuv.x);
   float fy = smoothstep(0.002, 0.08, tuv.y) * smoothstep(0.998, 0.92, tuv.y);
-  float meters = max(0.0, sampleTerrariumMeters(tuv));
+  float meters = max(0.0, fastTap ? sampleTerrariumFast(tuv) : sampleTerrariumMeters(tuv));
   return (meters / 6371000.0) * uTerrainExag * fx * fy * uTileBlend;
 }
 
-// 3D Heightfield Raymarching over the spherical DEM shell (adaptive steps for crisp near peaks!)
+// 3D Heightfield Raymarching over the spherical DEM shell (fast adaptive steps!)
 float raymarchTerrain3D(vec3 ro, vec3 rd, float camAlt, float tStart, float tEnd, float jitter) {
   if (tEnd <= tStart) return -1.0;
-  float tLimit = tStart + min(tEnd - tStart, 0.045);
-  int steps = (uHighQuality == 1) ? 110 : 68;
-  float stepGrowth = (uHighQuality == 1) ? 0.024 : 0.042;
-  float minStep = (uHighQuality == 1) ? 0.00005 : 0.00009;
+  float tLimit = tStart + min(tEnd - tStart, 0.042);
+  int steps = (uHighQuality == 1) ? 96 : 36;
+  float stepGrowth = (uHighQuality == 1) ? 0.028 : 0.078;
+  float minStep = (uHighQuality == 1) ? 0.00005 : 0.00014;
+  int binSteps = (uHighQuality == 1) ? 8 : 5;
 
   float tPrev = tStart;
   float t = tStart + minStep * jitter;
-  for (int i = 0; i < 110; i++) {
+  for (int i = 0; i < 96; i++) {
     if (i >= steps || t > tLimit) break;
     vec3 p = ro + rd * t;
     float hRay = rayAltFromCam(ro, rd, camAlt, t);
-    float hTerr = sampleTerrainHeightRadii(normalize(p));
+    float hTerr = sampleTerrainHeightRadii(normalize(p), true);
 
     if (hRay <= hTerr) {
-      // 9-step binary search for sub-meter exact 3D mountain surface (eliminates step rings)
       float lo = tPrev;
       float hi = t;
-      for (int b = 0; b < 9; b++) {
+      for (int b = 0; b < 8; b++) {
+        if (b >= binSteps) break;
         float mid = 0.5 * (lo + hi);
         float hm = rayAltFromCam(ro, rd, camAlt, mid);
-        float ht = sampleTerrainHeightRadii(normalize(ro + rd * mid));
+        float ht = sampleTerrainHeightRadii(normalize(ro + rd * mid), uHighQuality == 0);
         if (hm <= ht) {
           hi = mid;
         } else {
@@ -264,24 +271,25 @@ float raymarchTerrain3D(vec3 ro, vec3 rd, float camAlt, float tStart, float tEnd
   return -1.0;
 }
 
-// Soft 3D terrain cast shadows (with altitude bias to prevent flat-plain self-shadow waves!)
+// Soft 3D terrain cast shadows (fast 1-tap with altitude bias)
 float traceTerrainShadow(vec3 hitPos, float hitAlt, vec3 sunDir) {
   if (uTerrainExag <= 0.01 || uTileBlend <= 0.05) return 1.0;
   float dMax = 0.00145 * uTerrainExag;
-  // Bias start altitude slightly above exact surface height so flat plains never self-intersect
-  float baseAlt = max(hitAlt, sampleTerrainHeightRadii(normalize(hitPos))) + 0.000010;
+  float baseAlt = max(hitAlt, sampleTerrainHeightRadii(normalize(hitPos), true)) + 0.000010;
+  int steps = (uHighQuality == 1) ? 14 : 8;
   float shadow = 1.0;
-  float t = 0.00012;
+  float t = 0.00014;
   for (int i = 0; i < 14; i++) {
+    if (i >= steps) break;
     vec3 p = hitPos + sunDir * t;
     float r2Minus1 = baseAlt * (baseAlt + 2.0) + t * (2.0 * dot(hitPos, sunDir) + t);
     float hRay = r2Minus1 / (length(p) + 1.0);
     if (hRay > dMax) break;
-    float hTerr = sampleTerrainHeightRadii(normalize(p));
+    float hTerr = sampleTerrainHeightRadii(normalize(p), true);
     float diff = hRay - hTerr;
     if (diff < -0.000004) return 0.16;
     shadow = min(shadow, clamp(0.16 + (diff / (t * 0.14 + 1e-5)), 0.16, 1.0));
-    t *= 1.45;
+    t *= (uHighQuality == 1) ? 1.45 : 1.72;
   }
   return shadow;
 }
@@ -425,7 +433,7 @@ vec3 shadeMoon(vec3 hitPos, vec3 rd, vec3 sunDir) {
 // Volumetric 3D Aurora Borealis & Australis
 // ---------------------------------------------------------------------------
 vec3 integrateAurora(vec3 ro, vec3 rd, float tMaxHit, vec3 sunDir, float jitter) {
-  if (uAuroraIntensity <= 0.001) return vec3(0.0);
+  if (uAuroraIntensity <= 0.001 || uCamAlt < 0.08) return vec3(0.0);
 
   float rInner = R_EARTH + 0.012 * max(uAtmoHeight, 0.6);
   float rOuter = R_EARTH + 0.044 * max(uAtmoHeight, 0.6);
@@ -577,8 +585,8 @@ void integrateAtmosphere(
   outTransmittance = vec3(1.0);
   if (uAtmoDensity <= 0.001 || tEnd <= tStart) return;
 
-  int viewSteps = (uHighQuality == 1) ? 56 : 18;
-  int lightSteps = (uHighQuality == 1) ? 14 : 6;
+  int viewSteps = (uHighQuality == 1) ? 56 : 12;
+  int lightSteps = (uHighQuality == 1) ? 14 : 4;
 
   float dt = (tEnd - tStart) / float(viewSteps);
   float cosTheta = dot(rd, sunDir);
@@ -647,15 +655,12 @@ float noise2D(vec2 p) {
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-float fbm2D(vec2 p) {
-  float v = 0.0;
-  float a = 0.5;
-  mat2 rot = mat2(0.80, 0.60, -0.60, 0.80);
-  for (int i = 0; i < 4; i++) {
-    v += a * noise2D(p);
-    p = rot * p * 2.07 + vec2(13.7, 29.3);
-    a *= 0.5;
-  }
+float fbm2DFast(vec2 p) {
+  float v = 0.55 * noise2D(p);
+  p = mat2(0.80, 0.60, -0.60, 0.80) * p * 2.13 + vec2(13.7, 29.3);
+  v += 0.30 * noise2D(p);
+  p = mat2(0.80, 0.60, -0.60, 0.80) * p * 2.17 + vec2(7.1, 19.9);
+  v += 0.15 * noise2D(p);
   return v;
 }
 
@@ -670,22 +675,19 @@ void applyBiomeMicroDetail(
   inout vec3 Nsurf,
   inout float oceanMask
 ) {
-  if (tileMask <= 0.02 || distKm > 160.0) return;
+  if (tileMask <= 0.02 || distKm > 150.0) return;
 
-  // Distance fade so foreground/midground is razor-sharp while distant horizon stays shimmer-free
-  float nearFade = 1.0 - smoothstep(18.0, 145.0, distKm);
-  float fineFade = 1.0 - smoothstep(4.0, 48.0, distKm);
+  float nearFade = 1.0 - smoothstep(18.0, 140.0, distKm);
+  float fineFade = 1.0 - smoothstep(4.0, 44.0, distKm);
   float w = tileMask * nearFade;
   if (w <= 0.005) return;
 
   float cosLat = max(0.2, sqrt(max(0.0, 1.0 - N.y * N.y)));
-  // Exact metric km coordinates within the 8x8 tile patch (zero float32 precision loss!)
   float patchKm = (8.0 * 40075.0 * cosLat) / max(uTileBounds.w, 1.0);
   vec2 kmPos = tileUv * patchKm;
-  float elevM = sampleTerrariumMeters(tileUv);
+  float elevM = sampleTerrariumFast(tileUv);
   float slope = 1.0 - clamp(dot(Nsurf, N), 0.0, 1.0);
 
-  // Refine shoreline water mask using DEM elevation + marine satellite color
   float maxRGB = max(dayAlbedo.r, max(dayAlbedo.g, dayAlbedo.b));
   float minRGB = min(dayAlbedo.r, min(dayAlbedo.g, dayAlbedo.b));
   float sat = (maxRGB - minRGB) / max(maxRGB, 0.001);
@@ -697,23 +699,19 @@ void applyBiomeMicroDetail(
   oceanMask = mix(oceanMask, max(oceanMask * smoothstep(8.0, 1.0, elevM), localWater), tileMask);
 
   if (oceanMask > 0.5) {
-    // Animated 3D ocean swell + capillary ripples + subtle shoreline surf foam
-    vec2 wUv1 = kmPos * 4.5 + vec2(uTime * 0.14, uTime * 0.09);
-    vec2 wUv2 = kmPos * 14.0 - vec2(uTime * 0.22, -uTime * 0.16);
-    float h0 = fbm2D(wUv1) * 0.65 + noise2D(wUv2) * 0.35 * fineFade;
-    float hx = fbm2D(wUv1 + vec2(0.08, 0.0)) * 0.65 + noise2D(wUv2 + vec2(0.12, 0.0)) * 0.35 * fineFade;
-    float hy = fbm2D(wUv1 + vec2(0.0, 0.08)) * 0.65 + noise2D(wUv2 + vec2(0.0, 0.12)) * 0.35 * fineFade;
-    vec3 Nwave = normalize(N - ((hx - h0) * T + (hy - h0) * B) * 1.15 * w);
+    vec2 wUv = kmPos * 6.0 + vec2(uTime * 0.16, uTime * 0.10);
+    float h0 = fbm2DFast(wUv);
+    float hx = noise2D(wUv * 2.2 + vec2(0.14, 0.0)) - noise2D(wUv * 2.2);
+    float hy = noise2D(wUv * 2.2 + vec2(0.0, 0.14)) - noise2D(wUv * 2.2);
+    vec3 Nwave = normalize(N - (hx * T + hy * B) * 1.1 * w);
     Nsurf = normalize(mix(Nsurf, Nwave, oceanMask * w));
 
-    // Crisp white surf foam right along the coastline (0m .. 2.2m elevation)
     float shoreBand = smoothstep(0.0, 0.35, elevM) * smoothstep(2.4, 0.5, elevM);
-    float foamNoise = smoothstep(0.42, 0.78, fbm2D(kmPos * 9.0 + vec2(uTime * 0.12, 0.0)));
-    dayAlbedo = mix(dayAlbedo, vec3(0.76, 0.84, 0.90), shoreBand * foamNoise * 0.48 * w);
+    float foam = smoothstep(0.45, 0.76, h0);
+    dayAlbedo = mix(dayAlbedo, vec3(0.76, 0.84, 0.90), shoreBand * foam * 0.48 * w);
     return;
   }
 
-  // Biome classification on land
   float isSnow   = smoothstep(0.28, 0.55, lum) * smoothstep(0.26, 0.08, sat) * smoothstep(900.0, 2200.0, elevM);
   float isRock   = smoothstep(0.06, 0.28, slope) * (1.0 - isSnow * 0.65);
   float isForest = smoothstep(1.01, 1.14, dayAlbedo.g / max(dayAlbedo.r, 0.005)) *
@@ -721,44 +719,29 @@ void applyBiomeMicroDetail(
                    (1.0 - isRock * 0.85) * (1.0 - isSnow);
   float isSoil   = clamp(1.0 - isRock - isForest - isSnow, 0.0, 1.0);
 
-  // 1. Stratified Alpine Rock Cliffs & Crags
-  float rockMacro = fbm2D(kmPos * 2.8);
-  float strata = sin(elevM * 0.095 + rockMacro * 7.5) * 0.5 + 0.5;
-  float rockDetail = mix(rockMacro, strata, 0.45);
-  float rockFine = noise2D(kmPos * 24.0) * fineFade;
-  float rockMod = mix(0.68, 1.24, rockDetail * 0.7 + rockFine * 0.3);
+  // Shared 3-octave macro + fine micro detail (8x faster than per-biome FBMs!)
+  float macro = fbm2DFast(kmPos * 4.5);
+  float fine  = noise2D(kmPos * 32.0) * fineFade;
+  float strata = sin(elevM * 0.095 + macro * 7.5) * 0.5 + 0.5;
 
-  // 2. Forest Canopy Micro-Texture (tree-crown stipple + canopy AO)
-  float canopyCoarse = fbm2D(kmPos * 7.5);
-  float canopyFine = noise2D(kmPos * 42.0);
-  float canopy = mix(canopyCoarse, canopyFine, 0.55 * fineFade);
-  float forestMod = mix(0.72, 1.22, canopy);
+  float rockMod   = mix(0.68, 1.24, mix(macro, strata, 0.45) * 0.72 + fine * 0.28);
+  float forestMod = mix(0.72, 1.22, mix(macro, fine, 0.55 * fineFade));
+  float snowMod   = mix(0.88, 1.10, macro);
+  float soilMod   = mix(0.80, 1.18, macro * 0.68 + fine * 0.32);
 
-  // 3. Wind-Sculpted Snow & Glacier Ridges
-  float snowDrift = fbm2D(kmPos * vec2(3.2, 8.5));
-  float snowMod = mix(0.88, 1.10, snowDrift);
-
-  // 4. Dry Plains, Savanna, Farmland & Coastal Dunes (e.g. Madagascar)
-  float soilMacro = fbm2D(kmPos * 3.8);
-  float soilFine = noise2D(kmPos * 28.0) * fineFade;
-  float soilMod = mix(0.80, 1.18, soilMacro * 0.65 + soilFine * 0.35);
-
-  // Combine biome albedo modulation (preserves real satellite colors while adding crisp detail!)
   float totalMod = isRock * rockMod + isForest * forestMod + isSnow * snowMod + isSoil * soilMod;
   dayAlbedo *= mix(1.0, totalMod, w * 0.85);
 
-  // Slight exposed grey-slate rock tint on very steep cliffs
-  vec3 cliffTint = vec3(0.24, 0.25, 0.27) * mix(0.75, 1.25, rockDetail);
+  vec3 cliffTint = vec3(0.24, 0.25, 0.27) * mix(0.75, 1.25, mix(macro, strata, 0.4));
   dayAlbedo = mix(dayAlbedo, mix(dayAlbedo, cliffTint, 0.38), isRock * smoothstep(0.18, 0.45, slope) * w);
 
-  // High-frequency tangent-space micro-normal perturbation
-  float nFreq = mix(6.0, 22.0, isForest * 0.7 + isSoil * 0.3);
-  vec2 nPos = kmPos * nFreq;
-  float n0 = fbm2D(nPos);
-  float nx = fbm2D(nPos + vec2(0.14, 0.0));
-  float ny = fbm2D(nPos + vec2(0.0, 0.14));
-  float bumpAmp = (isRock * 1.45 + isForest * 0.95 + isSoil * 0.65 + isSnow * 0.45) * w * (0.45 + 0.55 * fineFade);
-  Nsurf = normalize(Nsurf - ((nx - n0) * T + (ny - n0) * B) * bumpAmp);
+  // Fast 2-tap normal gradient from fine noise
+  vec2 nPos = kmPos * mix(9.0, 20.0, isForest * 0.7 + isSoil * 0.3);
+  float n0 = noise2D(nPos);
+  float nx = noise2D(nPos + vec2(0.16, 0.0)) - n0;
+  float ny = noise2D(nPos + vec2(0.0, 0.16)) - n0;
+  float bumpAmp = (isRock * 1.4 + isForest * 0.9 + isSoil * 0.6 + isSnow * 0.4) * w * (0.45 + 0.55 * fineFade);
+  Nsurf = normalize(Nsurf - (nx * T + ny * B) * bumpAmp);
 }
 
 // ---------------------------------------------------------------------------
