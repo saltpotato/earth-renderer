@@ -160,7 +160,7 @@ export class EarthRaytracer {
       'uBumpStrength', 'uOceanSpec', 'uNightLights', 'uStarsIntensity', 'uAuroraIntensity',
       'uMoonEnabled', 'uMoonPos', 'uMoonRadius',
       'uSampleIndex', 'uHighQuality', 'uHasCustomClouds',
-      'uTileBounds', 'uTileBlend',
+      'uTileBounds', 'uTileRef', 'uTileBlend',
       'uDayTex', 'uNightTex', 'uBrcTex', 'uCloudTex', 'uMoonTex', 'uTileSatTex', 'uTileDemTex',
     ]);
     this.uDisp = this._getUniforms(this.displayProgram, [
@@ -495,8 +495,8 @@ export class EarthRaytracer {
 
     const startAlt = startFromSpace
       ? Math.max(this.state.camDist - 1.0, 1.85)
-      : Math.max(0.00025, this.state.camDist - 1.0);
-    const endAlt = Math.max(0.00024, targetAltKm / 6371);
+      : Math.max(0.000028, this.state.camDist - 1.0);
+    const endAlt = Math.max(0.000028, targetAltKm / 6371);
 
     // Position sun at a flattering oblique angle (~38 deg west of target) for dramatic DEM relief
     const targetSunAz = ((((lonDeg - 42 + 180) % 360) + 360) % 360) - 180;
@@ -530,7 +530,7 @@ export class EarthRaytracer {
     const sun = this._computeSunDir();
     const moonPos = this._computeMoonPos();
     const tanHalfFov = Math.tan(((this.state.fovDeg * Math.PI) / 180) * 0.5);
-    const camAlt = Math.max(0.0001, this.state.camDist - 1.0);
+    const camAlt = Math.max(0.00002, this.state.camDist - 1.0);
 
     // Smoothly blend high-res Esri+DEM tile patch as camera descends below ~3,500 km
     let tileBlend = 0.0;
@@ -572,6 +572,7 @@ export class EarthRaytracer {
     gl.uniform1i(this.uRay.uHasCustomClouds, this.hasCustomClouds ? 1 : 0);
 
     gl.uniform4fv(this.uRay.uTileBounds, this.tileStreamer.activeBounds);
+    gl.uniform4fv(this.uRay.uTileRef, this.tileStreamer.activeRef);
     gl.uniform1f(this.uRay.uTileBlend, tileBlend);
 
     gl.activeTexture(gl.TEXTURE0);

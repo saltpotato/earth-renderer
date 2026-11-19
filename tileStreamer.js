@@ -9,9 +9,9 @@ const TERRARIUM_URL = (z, x, y) =>
 
 const TILE_SIZE = 256;
 const GRID_SIZE = 8; // 8x8 = 2048x2048 dynamic GPU patch (covers full 16:9 widescreen!)
-const MAX_CACHE = 420;
+const MAX_CACHE = 480;
 const MIN_ZOOM = 4;
-const MAX_ZOOM = 16;
+const MAX_ZOOM = 19; // Up to ~30 cm/px (rooftops & cars in Esri World Imagery)
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
@@ -28,12 +28,12 @@ export function latLonToTileFloat(latDeg, lonDeg, zoom) {
 
 export function computeIdealZoom(altEarthRadii, fovDeg, latDeg) {
   // Visible ground width in km
-  const altKm = Math.max(0.2, altEarthRadii * 6371);
+  const altKm = Math.max(0.05, altEarthRadii * 6371);
   const visKm = 2 * altKm * Math.tan(((fovDeg * Math.PI) / 180) * 0.5);
   const cosLat = Math.max(0.2, Math.cos((latDeg * Math.PI) / 180));
   // Account for 16:9 widescreen horizontal span so tiles fill 100% edge-to-edge
   const targetTileKm = (visKm * 2.15) / GRID_SIZE;
-  const zFloat = Math.log2((40075 * cosLat) / Math.max(targetTileKm, 0.05));
+  const zFloat = Math.log2((40075 * cosLat) / Math.max(targetTileKm, 0.01));
   return clamp(Math.round(zFloat), MIN_ZOOM, MAX_ZOOM);
 }
 
@@ -90,6 +90,8 @@ export class DynamicTileStreamer {
 
     // Current uploaded GPU patch bounds: [xMin, yMin, gridSize, nTiles]
     this.activeBounds = [0, 0, GRID_SIZE, 1];
+    // High-precision float64 top-left reference [refLonRad, refLatRad, cosRefLat, sinRefLat]
+    this.activeRef = [0, 0, 1, 0];
     this.activeZoom = 0;
     this.hasValidPatch = false;
     this.isLoading = false;
@@ -239,6 +241,9 @@ export class DynamicTileStreamer {
     this.isLoading = false;
     if (anySat) {
       this.activeBounds = [xMin, yMin, GRID_SIZE, n];
+      const refLonRad = (xMin / n - 0.5) * Math.PI * 2;
+      const refLatRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * yMin) / n)));
+      this.activeRef = [refLonRad, refLatRad, Math.cos(refLatRad), Math.sin(refLatRad)];
       this.activeZoom = zoom;
       this.hasValidPatch = true;
       if (this.onPatchUpdated) {

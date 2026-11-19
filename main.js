@@ -458,8 +458,8 @@ canvas.addEventListener('pointermove', (e) => {
     renderer.state.sunElDeg = Math.max(-45, Math.min(45, renderer.state.sunElDeg - dy * 0.25));
     syncSlidersFromState();
   } else {
-    // Smoothly scale pan speed with altitude all the way down to 1.5 km!
-    const alt = Math.max(0.00024, renderer.state.camDist - 1.0);
+    // Smoothly scale pan speed with altitude all the way down to 180 m!
+    const alt = Math.max(0.000028, renderer.state.camDist - 1.0);
     const speed = 0.0042 * Math.min(1.0, alt * 0.85);
     const cosLat = Math.max(0.18, Math.cos(renderer.state.camPitch));
     renderer.state.camYaw -= (dx * speed) / cosLat;
@@ -481,8 +481,8 @@ canvas.addEventListener('pointerup', (e) => {
 
 function applyZoomScale(factor) {
   const alt = renderer.state.camDist - 1.0;
-  // Allow zooming from 35,000 km all the way down to 1.5 km altitude
-  const newAlt = Math.max(0.00024, Math.min(5.5, alt * factor));
+  // Allow zooming from 35,000 km all the way down to 180 m altitude (Z19)
+  const newAlt = Math.max(0.000028, Math.min(5.5, alt * factor));
   renderer.state.camDist = 1.0 + newAlt;
   updateTelemetry();
 }
@@ -514,7 +514,7 @@ canvas.addEventListener('gesturechange', (e) => {
   e.preventDefault();
   if (renderer.mode !== 'live' || gestureStartAlt === null) return;
   const scale = Math.max(0.1, e.scale || 1);
-  const newAlt = Math.max(0.00024, Math.min(5.5, gestureStartAlt / Math.pow(scale, 2.2)));
+  const newAlt = Math.max(0.000028, Math.min(5.5, gestureStartAlt / Math.pow(scale, 2.2)));
   renderer.state.camDist = 1.0 + newAlt;
   updateTelemetry();
 }, { passive: false });
@@ -545,9 +545,14 @@ window.addEventListener('keydown', (e) => {
 function updateTelemetry() {
   const { latDeg, lonDeg, alt } = renderer.getCameraLatLon();
   const altKm = alt * 6371;
-  const altStr = altKm >= 100
-    ? `${Math.round(altKm).toLocaleString('de-DE')} km`
-    : `${altKm.toFixed(1).replace('.', ',')} km`;
+  let altStr;
+  if (altKm >= 100) {
+    altStr = `${Math.round(altKm).toLocaleString('de-DE')} km`;
+  } else if (altKm >= 1.0) {
+    altStr = `${altKm.toFixed(1).replace('.', ',')} km`;
+  } else {
+    altStr = `${Math.round(altKm * 1000)} m`;
+  }
   const latStr = `${Math.abs(latDeg).toFixed(2)}°${latDeg >= 0 ? 'N' : 'S'}`;
   const lonStr = `${Math.abs(lonDeg).toFixed(2)}°${lonDeg >= 0 ? 'E' : 'W'}`;
   statAlt.textContent = `ALT ${altStr} · ${latStr} ${lonStr}`;

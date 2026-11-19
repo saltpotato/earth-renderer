@@ -54,6 +54,7 @@ uniform int uHighQuality;
 uniform int uHasCustomClouds;
 
 uniform vec4 uTileBounds;      // xMin, yMin, gridSize, nTiles
+uniform vec4 uTileRef;         // refLonRad, refLatRad, cosRefLat, sinRefLat (float64 origin)
 uniform float uTileBlend;      // 0..1 blend weight for dynamic satellite/DEM patch
 
 uniform sampler2D uDayTex;
@@ -157,12 +158,26 @@ vec2 sphereToMercatorTileUv(vec3 n, float lonOffset, vec4 bounds) {
   vec3 nr = rotateY(n, lonOffset);
   float lon = atan(nr.x, nr.z);
   float nTiles = bounds.w;
+
+  if (nTiles >= 2048.0) {
+    // High-precision local Mercator coordinates relative to float64 patch origin (crisp up to Z19!)
+    float dLon = mod(lon - uTileRef.x + PI, TWO_PI) - PI;
+    float dx = (dLon / TWO_PI) * nTiles;
+
+    float lat = asin(clamp(nr.y, -0.996, 0.996));
+    float dLat = lat - uTileRef.y;
+    float c = max(uTileRef.z, 0.08);
+    float s = uTileRef.w;
+    float dMercY = -(dLat / c + 0.5 * dLat * dLat * (s / (c * c))) / TWO_PI;
+    float dy = dMercY * nTiles;
+    return vec2(dx, dy) / bounds.z;
+  }
+
   float tx = (lon / TWO_PI + 0.5) * nTiles;
   float sinLat = clamp(nr.y, -0.996, 0.996);
   float mercY = 0.5 - log((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * PI);
   float ty = mercY * nTiles;
 
-  // Wrap horizontal delta cleanly across antimeridian
   float dx = mod(tx - bounds.x + nTiles * 0.5, nTiles) - nTiles * 0.5;
   float dy = ty - bounds.y;
   return vec2(dx, dy) / bounds.z;
