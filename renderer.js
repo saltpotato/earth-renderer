@@ -1,5 +1,6 @@
 import { fullscreenVert, earthRaytraceFrag, displayFrag } from './shaders.js';
 import { DynamicTileStreamer } from './tileStreamer.js';
+import { FlightAutopilot, offsetLatLon } from './flightAutopilot.js';
 
 const CDN_TEXTURES = {
   day: [
@@ -191,6 +192,10 @@ export class EarthRaytracer {
 
     // Smooth Deep-Zoom flight animation state
     this.flight = null;
+
+    // City-to-City Autopilot (Bush Plane / Business Jet / Airliner)
+    this.autopilot = new FlightAutopilot();
+    this.onAutopilotUpdate = null;
 
     // Scene state
     this.state = {
@@ -426,6 +431,67 @@ export class EarthRaytracer {
   }
 
   _computeCameraBasis() {
+    // Autopilot Free-Look Passenger / Cockpit Camera
+    if (this.autopilot.active) {
+      const latRad = (this.autopilot.lat * Math.PI) / 180;
+      const lonRad = (this.autopilot.lon * Math.PI) / 180 - this.state.earthRot;
+      const cp = Math.cos(latRad);
+      const sp = Math.sin(latRad);
+      const sy = Math.sin(lonRad);
+      const cy = Math.cos(lonRad);
+
+      const gx = cp * sy;
+      const gy = sp;
+      const gz = cp * cy;
+      const alt = Math.max(0.00004, this.autopilot.altKm / 6371);
+      const r = 1.0 + alt;
+      const pos = [gx * r, gy * r, gz * r];
+
+      // Local East & North
+      let ex = gz;
+      let ez = -gx;
+      const el = Math.hypot(ex, ez) || 1;
+      ex /= el; ez /= el;
+
+      const nx = gy * ez;
+      const ny = gz * ex - gx * ez;
+      const nz = -gy * ex;
+
+      const viewHeading = ((this.autopilot.headingDeg + this.autopilot.lookYawDeg) * Math.PI) / 180;
+      const viewPitch = (Math.max(-82, Math.min(72, this.autopilot.lookPitchDeg)) * Math.PI) / 180;
+      const ch = Math.cos(viewHeading);
+      const sh = Math.sin(viewHeading);
+      const cpv = Math.cos(viewPitch);
+      const spv = Math.sin(viewPitch);
+
+      const hx = ch * nx + sh * ex;
+      const hy = ch * ny;
+      const hz = ch * nz + sh * ez;
+
+      const fx = cpv * hx + spv * gx;
+      const fy = cpv * hy + spv * gy;
+      const fz = cpv * hz + spv * gz;
+
+      // Right = normalize(cross(H, G)) -> level horizon regardless of pitch!
+      let rx = hy * gz - hz * gy;
+      let ry = hz * gx - hx * gz;
+      let rz = hx * gy - hy * gx;
+      const rl = Math.hypot(rx, ry, rz) || 1;
+      rx /= rl; ry /= rl; rz /= rl;
+
+      const ux = ry * fz - rz * fy;
+      const uy = rz * fx - rx * fz;
+      const uz = rx * fy - ry * fx;
+
+      return {
+        pos,
+        camAlt: alt,
+        forward: [fx, fy, fz],
+        right: [rx, ry, rz],
+        up: [ux, uy, uz],
+      };
+    }
+
     const { camYaw, camPitch, camDist, camTiltDeg, camHeadingDeg, camTargetOffset } = this.state;
     const cp = Math.cos(camPitch);
     const sp = Math.sin(camPitch);
@@ -795,33 +861,75 @@ export class EarthRaytracer {
     }
   }
 
+  startAutopilotFlight(from, to, aircraftId, timeScale = null) {
+    this.cancelFlight();
+    this.tileStreamer.enabled = true;
+    this.autopilot.startRoute(from, to, aircraftId, timeScale);
+    this.state.fovDeg = 54; // Wide scenic cockpit / window-seat FOV
+    // Set flattering golden-hour oblique sun along the route
+    const midLon = (from.lon + to.lon) * 0.5;
+    const midLat = (from.lat + to.lat) * 0.5;
+    this.state.sunAzDeg = ((((midLon - 46 + 180) % 360) + 360) % 360) - 180;
+    this.state.sunElDeg = Math.max(12, Math.min(30, midLat * 0.4 + 10));
+    if (this.onAutopilotUpdate) this.onAutopilotUpdate();
+  }
+
+  stopAutopilotFlight() {
+    if (!this.autopilot.active) return;
+    // Seamlessly hand off to orbit camera at current aircraft location
+    this.state.camPitch = (this.autopilot.lat * Math.PI) / 180;
+    this.state.camYaw = (this.autopilot.lon * Math.PI) / 180 - this.state.earthRot;
+    this.state.camDist = 1.0 + Math.max(0.0005, (this.autopilot.altKm * 2.2) / 6371);
+    this.state.camTiltDeg = 52;
+    this.state.camHeadingDeg = this.autopilot.headingDeg;
+    this.state.fovDeg = 38;
+    this.autopilot.stop();
+    if (this.onAutopilotUpdate) this.onAutopilotUpdate();
+  }
+
   tick(dt) {
     if (this.mode === 'live') {
       this.state.time += dt;
-      if (this.flight) {
-        this.flight.elapsed += dt;
-        const p = Math.min(1, this.flight.elapsed / this.flight.duration);
-        const s = p * p * (3 - 2 * p);
-        // Ease tilt in mostly during the second half of the descent for a cinematic swoop!
-        const tiltEase = Math.max(0, Math.min(1, (p - 0.35) / 0.65));
-        const ts = tiltEase * tiltEase * (3 - 2 * tiltEase);
-        this.state.camYaw = this.flight.startYaw + (this.flight.endYaw - this.flight.startYaw) * s;
-        this.state.camPitch = this.flight.startPitch + (this.flight.endPitch - this.flight.startPitch) * s;
-        const logAlt = this.flight.startLogAlt + (this.flight.endLogAlt - this.flight.startLogAlt) * s;
-        this.state.camDist = 1.0 + Math.exp(logAlt);
-        this.state.camTiltDeg = this.flight.startTilt + (this.flight.endTilt - this.flight.startTilt) * ts;
-        this.state.camHeadingDeg = this.flight.startHeading + (this.flight.endHeading - this.flight.startHeading) * s;
-        this.state.sunAzDeg = this.flight.startSunAz + (this.flight.endSunAz - this.flight.startSunAz) * s;
-        this.state.sunElDeg = this.flight.startSunEl + (this.flight.endSunEl - this.flight.startSunEl) * s;
-        if (this.onFlightUpdate) this.onFlightUpdate();
-        if (p >= 1) this.flight = null;
-      } else if (this.state.autoRotate) {
-        this.state.earthRot += dt * 0.04;
-      }
 
-      // Stream dynamic Esri + Terrarium tiles automatically when zoomed in
-      const { latDeg, lonDeg, alt } = this.getCameraLatLon();
-      this.tileStreamer.updateForCamera(latDeg, lonDeg, alt, this.state.fovDeg);
+      if (this.autopilot.active) {
+        this.autopilot.step(dt);
+        this.state.camPitch = (this.autopilot.lat * Math.PI) / 180;
+        this.state.camYaw = (this.autopilot.lon * Math.PI) / 180 - this.state.earthRot;
+        this.state.camDist = 1.0 + Math.max(0.00004, this.autopilot.altKm / 6371);
+        if (this.onAutopilotUpdate) this.onAutopilotUpdate();
+
+        // Pre-stream wide horizon Esri + 3D DEM tiles ahead of the cockpit/window view!
+        const viewHeading = (this.autopilot.headingDeg + this.autopilot.lookYawDeg + 360) % 360;
+        const lookAheadKm = Math.min(60, this.autopilot.altKm * 3.8);
+        const focus = offsetLatLon(this.autopilot.lat, this.autopilot.lon, viewHeading, lookAheadKm);
+        // Wide Z10-Z11 effective span (120-240 km) so the entire Alpine vista to the horizon is sharp!
+        const effAlt = Math.max(0.0085, (this.autopilot.altKm * 6.5) / 6371);
+        this.tileStreamer.updateForCamera(focus.lat, focus.lon, effAlt, this.state.fovDeg, 2);
+      } else {
+        if (this.flight) {
+          this.flight.elapsed += dt;
+          const p = Math.min(1, this.flight.elapsed / this.flight.duration);
+          const s = p * p * (3 - 2 * p);
+          const tiltEase = Math.max(0, Math.min(1, (p - 0.35) / 0.65));
+          const ts = tiltEase * tiltEase * (3 - 2 * tiltEase);
+          this.state.camYaw = this.flight.startYaw + (this.flight.endYaw - this.flight.startYaw) * s;
+          this.state.camPitch = this.flight.startPitch + (this.flight.endPitch - this.flight.startPitch) * s;
+          const logAlt = this.flight.startLogAlt + (this.flight.endLogAlt - this.flight.startLogAlt) * s;
+          this.state.camDist = 1.0 + Math.exp(logAlt);
+          this.state.camTiltDeg = this.flight.startTilt + (this.flight.endTilt - this.flight.startTilt) * ts;
+          this.state.camHeadingDeg = this.flight.startHeading + (this.flight.endHeading - this.flight.startHeading) * s;
+          this.state.sunAzDeg = this.flight.startSunAz + (this.flight.endSunAz - this.flight.startSunAz) * s;
+          this.state.sunElDeg = this.flight.startSunEl + (this.flight.endSunEl - this.flight.startSunEl) * s;
+          if (this.onFlightUpdate) this.onFlightUpdate();
+          if (p >= 1) this.flight = null;
+        } else if (this.state.autoRotate) {
+          this.state.earthRot += dt * 0.04;
+        }
+
+        // Stream dynamic Esri + Terrarium tiles automatically when zoomed in
+        const { latDeg, lonDeg, alt } = this.getCameraLatLon();
+        this.tileStreamer.updateForCamera(latDeg, lonDeg, alt, this.state.fovDeg);
+      }
 
       this._ensureAccumFbo(this.canvas.width, this.canvas.height);
       this._renderSampleToAccum(0, false);

@@ -141,6 +141,39 @@
           </button>
         </section>
 
+        <!-- City-to-City Autopilot Flight Simulator -->
+        <section class="section autopilot-section">
+          <h3>✈ Autopilot-Flug (Stadt → Stadt)</h3>
+          <label class="field">
+            <span>Flugzeugtyp</span>
+            <select id="ap-aircraft">
+              <option value="bush" selected>Buschflieger (~4,6 km · 240 km/h)</option>
+              <option value="bizjet">Business Jet (~8,2 km · 760 km/h)</option>
+              <option value="airliner">Großer Airliner (FL380 · 900 km/h)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Beliebte Routen</span>
+            <select id="ap-route-preset">
+              <option value="muc-mxp" selected>München → Mailand (Alpen)</option>
+              <option value="zrh-nce">Zürich → Nizza (Matterhorn)</option>
+              <option value="inn-vce">Innsbruck → Venedig</option>
+              <option value="las-gcn">Las Vegas → Grand Canyon</option>
+              <option value="tyo-kix">Tokio → Kyoto (Mt. Fuji)</option>
+              <option value="ber-par">Berlin → Paris</option>
+              <option value="custom">Eigene Route (Von / Nach)…</option>
+            </select>
+          </label>
+          <div class="row-2">
+            <input type="text" id="ap-from" class="ap-input" value="München" placeholder="Von (Stadt)…" />
+            <input type="text" id="ap-to" class="ap-input" value="Mailand" placeholder="Nach (Stadt)…" />
+          </div>
+          <button id="btn-start-autopilot" class="btn btn-autopilot btn-full">
+            ✈ Autopilot starten
+          </button>
+          <p id="ap-status" class="hint hidden"></p>
+        </section>
+
         <!-- Deep-Zoom Live Tile Destinations, Search & 3D Terrain -->
         <section class="section deepzoom-section">
           <h3>Deep-Zoom &amp; 3D-Terrain</h3>
@@ -378,6 +411,39 @@
     <button id="btn-open-panel" class="open-panel-btn hidden" title="Einstellungen öffnen">
       ⚙ Steuerung
     </button>
+
+    <!-- Autopilot Flight HUD (shown while flying) -->
+    <div id="autopilot-hud" class="autopilot-hud hidden">
+      <div class="ap-hud-top">
+        <div class="ap-hud-info">
+          <span class="badge badge-ap" id="ap-hud-aircraft">BUSCHFLIEGER</span>
+          <strong id="ap-hud-route">München → Mailand</strong>
+          <span class="mono" id="ap-hud-telemetry">ALT 2,6 km · 220 km/h · HDG 204° · 180 km</span>
+        </div>
+        <div class="ap-hud-controls">
+          <div class="ap-view-pills">
+            <button class="ap-pill" data-view="front" title="Cockpit (Vorne)">Cockpit</button>
+            <button class="ap-pill" data-view="left" title="Fenster Links">Links</button>
+            <button class="ap-pill" data-view="right" title="Fenster Rechts">Rechts</button>
+            <button class="ap-pill" data-view="down" title="Blick nach unten">Unten</button>
+          </div>
+          <select id="ap-timescale" class="ap-select-mini" title="Zeitraffer">
+            <option value="1">1× Echtzeit</option>
+            <option value="5">5×</option>
+            <option value="10" selected>10×</option>
+            <option value="25">25×</option>
+            <option value="60">60×</option>
+          </select>
+          <button id="btn-ap-pause" class="btn btn-secondary">Pause</button>
+          <button id="btn-ap-stop" class="btn btn-danger">Beenden</button>
+        </div>
+      </div>
+      <div class="ap-scrubber-row">
+        <span class="mono ap-end-label" id="ap-label-from">München</span>
+        <input type="range" id="ap-progress" min="0" max="100" step="0.1" value="2" />
+        <span class="mono ap-end-label" id="ap-label-to">Mailand</span>
+      </div>
+    </div>
 
     <!-- Bottom-Left Interaction Hint -->
     <footer class="hud-footer">

@@ -207,26 +207,27 @@ float sampleTerrainHeightRadii(vec3 n) {
   return (meters / 6371000.0) * uTerrainExag * fx * fy * uTileBlend;
 }
 
-// 3D Heightfield Raymarching over the spherical DEM shell (returns hit t, or -1.0 if miss)
+// 3D Heightfield Raymarching over the spherical DEM shell (adaptive steps for crisp near peaks!)
 float raymarchTerrain3D(vec3 ro, vec3 rd, float camAlt, float tStart, float tEnd, float jitter) {
   if (tEnd <= tStart) return -1.0;
-  float maxMarch = min(tEnd - tStart, 0.045);
-  int steps = (uHighQuality == 1) ? 72 : 40;
-  float dt = maxMarch / float(steps);
+  float tLimit = tStart + min(tEnd - tStart, 0.045);
+  int steps = (uHighQuality == 1) ? 110 : 68;
+  float stepGrowth = (uHighQuality == 1) ? 0.024 : 0.042;
+  float minStep = (uHighQuality == 1) ? 0.00005 : 0.00009;
 
   float tPrev = tStart;
-  for (int i = 0; i < 72; i++) {
-    if (i >= steps) break;
-    float t = tStart + (float(i) + jitter) * dt;
+  float t = tStart + minStep * jitter;
+  for (int i = 0; i < 110; i++) {
+    if (i >= steps || t > tLimit) break;
     vec3 p = ro + rd * t;
     float hRay = rayAltFromCam(ro, rd, camAlt, t);
     float hTerr = sampleTerrainHeightRadii(normalize(p));
 
     if (hRay <= hTerr) {
-      // 6-step binary search for sub-meter exact 3D mountain surface
+      // 7-step binary search for sub-meter exact 3D mountain surface
       float lo = tPrev;
       float hi = t;
-      for (int b = 0; b < 6; b++) {
+      for (int b = 0; b < 7; b++) {
         float mid = 0.5 * (lo + hi);
         float hm = rayAltFromCam(ro, rd, camAlt, mid);
         float ht = sampleTerrainHeightRadii(normalize(ro + rd * mid));
@@ -239,6 +240,7 @@ float raymarchTerrain3D(vec3 ro, vec3 rd, float camAlt, float tStart, float tEnd
       return 0.5 * (lo + hi);
     }
     tPrev = t;
+    t += max(minStep, (t - tStart) * stepGrowth);
   }
   return -1.0;
 }

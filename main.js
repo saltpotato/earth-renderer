@@ -1,4 +1,5 @@
 import { EarthRaytracer } from './renderer.js';
+import { AIRCRAFT_PROFILES, SCENIC_ROUTES } from './flightAutopilot.js';
 
 const PRESETS = {
   'europe-day': {
@@ -247,6 +248,153 @@ document.getElementById('tile-stream-enabled').addEventListener('change', (e) =>
   updateTelemetry();
 });
 
+// ---------------------------------------------------------------------------
+// City-to-City Autopilot Flight Simulator
+// ---------------------------------------------------------------------------
+const apAircraftEl = document.getElementById('ap-aircraft');
+const apRoutePresetEl = document.getElementById('ap-route-preset');
+const apFromEl = document.getElementById('ap-from');
+const apToEl = document.getElementById('ap-to');
+const apStatusEl = document.getElementById('ap-status');
+const btnStartAutopilot = document.getElementById('btn-start-autopilot');
+
+const apHud = document.getElementById('autopilot-hud');
+const apHudAircraft = document.getElementById('ap-hud-aircraft');
+const apHudRoute = document.getElementById('ap-hud-route');
+const apHudTelemetry = document.getElementById('ap-hud-telemetry');
+const apLabelFrom = document.getElementById('ap-label-from');
+const apLabelTo = document.getElementById('ap-label-to');
+const apProgressEl = document.getElementById('ap-progress');
+const apTimescaleEl = document.getElementById('ap-timescale');
+const btnApPause = document.getElementById('btn-ap-pause');
+const btnApStop = document.getElementById('btn-ap-stop');
+
+async function geocodePlace(query) {
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
+  const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const results = await resp.json();
+  if (!results || results.length === 0) throw new Error(`„${query}“ nicht gefunden`);
+  const hit = results[0];
+  return {
+    name: hit.display_name.split(',')[0].trim(),
+    lat: parseFloat(hit.lat),
+    lon: parseFloat(hit.lon),
+    hit,
+  };
+}
+
+apRoutePresetEl.addEventListener('change', () => {
+  const r = SCENIC_ROUTES[apRoutePresetEl.value];
+  if (r) {
+    apFromEl.value = r.from.name;
+    apToEl.value = r.to.name;
+  }
+});
+
+apFromEl.addEventListener('input', () => { apRoutePresetEl.value = 'custom'; });
+apToEl.addEventListener('input', () => { apRoutePresetEl.value = 'custom'; });
+
+apAircraftEl.addEventListener('change', () => {
+  if (renderer.autopilot.active) {
+    renderer.autopilot.setAircraft(apAircraftEl.value);
+    updateAutopilotHud();
+  }
+});
+
+function updateAutopilotHud() {
+  const ap = renderer.autopilot;
+  if (!ap.active) {
+    apHud.classList.add('hidden');
+    return;
+  }
+  apHud.classList.remove('hidden');
+  const profile = AIRCRAFT_PROFILES[ap.aircraftId];
+  apHudAircraft.textContent = profile.shortLabel;
+  apHudRoute.textContent = `${ap.from.name} → ${ap.to.name}`;
+  apLabelFrom.textContent = ap.from.name;
+  apLabelTo.textContent = ap.to.name;
+
+  const altStr = ap.altKm >= 1
+    ? `${ap.altKm.toFixed(1).replace('.', ',')} km`
+    : `${Math.round(ap.altKm * 1000)} m`;
+  const remKm = Math.round(ap.getRemainingKm());
+  apHudTelemetry.textContent = `ALT ${altStr} · ${ap.speedKmh} km/h · HDG ${String(Math.round(ap.headingDeg)).padStart(3, '0')}° · ${remKm} km`;
+  apProgressEl.value = (ap.progress * 100).toFixed(1);
+  btnApPause.textContent = ap.paused ? 'Weiter' : 'Pause';
+  updateTelemetry();
+}
+
+renderer.onAutopilotUpdate = updateAutopilotHud;
+
+btnStartAutopilot.addEventListener('click', async () => {
+  const aircraftId = apAircraftEl.value;
+  const presetKey = apRoutePresetEl.value;
+  const fromText = apFromEl.value.trim();
+  const toText = apToEl.value.trim();
+
+  if (renderer.mode !== 'live') exitRenderView();
+  apStatusEl.classList.add('hidden');
+
+  let fromObj, toObj;
+  const preset = SCENIC_ROUTES[presetKey];
+  if (preset && preset.from.name === fromText && preset.to.name === toText) {
+    fromObj = preset.from;
+    toObj = preset.to;
+  } else {
+    if (!fromText || !toText) {
+      apStatusEl.textContent = 'Bitte Start- und Zielstadt eingeben.';
+      apStatusEl.classList.remove('hidden');
+      return;
+    }
+    apStatusEl.textContent = `Berechne Route ${fromText} → ${toText}…`;
+    apStatusEl.classList.remove('hidden');
+    try {
+      [fromObj, toObj] = await Promise.all([geocodePlace(fromText), geocodePlace(toText)]);
+      apStatusEl.classList.add('hidden');
+    } catch (err) {
+      apStatusEl.textContent = `Route fehlgeschlagen: ${err.message}`;
+      return;
+    }
+  }
+
+  const ts = parseFloat(apTimescaleEl.value) || null;
+  renderer.startAutopilotFlight(fromObj, toObj, aircraftId, ts);
+  document.getElementById('tile-stream-enabled').checked = true;
+  syncSlidersFromState();
+  updateAutopilotHud();
+});
+
+btnApPause.addEventListener('click', () => {
+  renderer.autopilot.paused = !renderer.autopilot.paused;
+  updateAutopilotHud();
+});
+
+btnApStop.addEventListener('click', () => {
+  renderer.stopAutopilotFlight();
+  syncSlidersFromState();
+  updateTelemetry();
+});
+
+apTimescaleEl.addEventListener('change', () => {
+  renderer.autopilot.timeScale = parseFloat(apTimescaleEl.value) || 10;
+});
+
+apProgressEl.addEventListener('input', () => {
+  renderer.autopilot.setProgress(parseFloat(apProgressEl.value) / 100);
+  updateAutopilotHud();
+});
+
+document.querySelectorAll('.ap-pill').forEach((pill) => {
+  pill.addEventListener('click', () => {
+    const v = pill.dataset.view;
+    if (v === 'front') renderer.autopilot.setLookView(0, -12);
+    else if (v === 'left') renderer.autopilot.setLookView(-75, -14);
+    else if (v === 'right') renderer.autopilot.setLookView(75, -14);
+    else if (v === 'down') renderer.autopilot.setLookView(0, -48);
+  });
+});
+
 // Nominatim Place / Address Geocoding Search
 const searchForm = document.getElementById('place-search-form');
 const searchInput = document.getElementById('place-search');
@@ -286,6 +434,7 @@ searchForm.addEventListener('submit', async (e) => {
     searchStatus.textContent = `Flug nach ${shortName} (${lat.toFixed(2)}°, ${lon.toFixed(2)}°)`;
 
     if (renderer.mode !== 'live') exitRenderView();
+    if (renderer.autopilot.active) renderer.stopAutopilotFlight();
     renderer.tileStreamer.enabled = true;
     document.getElementById('tile-stream-enabled').checked = true;
     const isPeak = /peak|mountain|volcano|glacier|canyon|alps/i.test(`${hit.type} ${hit.class} ${hit.display_name}`);
@@ -301,6 +450,7 @@ document.querySelectorAll('.zoom-btn').forEach((btn) => {
     const t = DEEP_ZOOM_TARGETS[btn.dataset.zoom];
     if (!t) return;
     if (renderer.mode !== 'live') exitRenderView();
+    if (renderer.autopilot.active) renderer.stopAutopilotFlight();
     renderer.tileStreamer.enabled = true;
     document.getElementById('tile-stream-enabled').checked = true;
     renderer.flyToLocation(t.lat, t.lon, t.altKm, 3.6, true, t.tiltDeg ?? 0, t.headingDeg ?? 0);
@@ -313,6 +463,7 @@ document.querySelectorAll('.preset-btn[data-preset]').forEach((btn) => {
     const p = PRESETS[btn.dataset.preset];
     if (!p) return;
     if (renderer.mode !== 'live') exitRenderView();
+    if (renderer.autopilot.active) renderer.stopAutopilotFlight();
     renderer.cancelFlight();
     Object.assign(renderer.state, {
       ...p,
@@ -520,6 +671,10 @@ canvas.addEventListener('pointermove', (e) => {
     renderer.state.sunAzDeg = ((renderer.state.sunAzDeg + dx * 0.35 + 540) % 360) - 180;
     renderer.state.sunElDeg = Math.max(-45, Math.min(45, renderer.state.sunElDeg - dy * 0.25));
     syncSlidersFromState();
+  } else if (renderer.autopilot.active) {
+    // Free 360° passenger / cockpit look-around while Autopilot flies!
+    renderer.autopilot.lookYawDeg = ((renderer.autopilot.lookYawDeg - dx * 0.28 + 540) % 360) - 180;
+    renderer.autopilot.lookPitchDeg = Math.max(-80, Math.min(68, renderer.autopilot.lookPitchDeg + dy * 0.22));
   } else if (dragMode === 'tilt' || e.altKey) {
     // Google-Earth-style 3D Tilt & Compass Heading rotation
     renderer.state.camHeadingDeg = (renderer.state.camHeadingDeg + dx * 0.35 + 360) % 360;
@@ -554,6 +709,12 @@ canvas.addEventListener('pointerup', (e) => {
 });
 
 function applyZoomScale(factor) {
+  if (renderer.autopilot.active) {
+    // Binocular / camera lens FOV zoom while looking out the plane window
+    renderer.state.fovDeg = Math.max(18, Math.min(75, renderer.state.fovDeg * factor));
+    syncSlidersFromState();
+    return;
+  }
   const alt = renderer.state.camDist - 1.0;
   // Allow zooming from 35,000 km all the way down to 180 m altitude (Z19)
   const newAlt = Math.max(0.000028, Math.min(5.5, alt * factor));

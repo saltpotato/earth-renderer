@@ -121,7 +121,7 @@ export class DynamicTileStreamer {
    * Call frequently in live preview; debounces & streams tiles automatically
    * whenever altitude is low enough for high-res imagery (< 3,800 km).
    */
-  updateForCamera(latDeg, lonDeg, altEarthRadii, fovDeg) {
+  updateForCamera(latDeg, lonDeg, altEarthRadii, fovDeg, minTileShift = 0) {
     if (!this.enabled || altEarthRadii > 0.62) {
       return;
     }
@@ -134,7 +134,25 @@ export class DynamicTileStreamer {
     const reqKey = `${zoom}:${xMin}:${yMin}`;
 
     if (reqKey === this._lastRequestKey) return;
+
+    // During continuous flight, keep current patch until we've moved >= minTileShift tiles
+    if (minTileShift > 0 && this.hasValidPatch && zoom === this.activeZoom) {
+      const dx = Math.abs(xMin - this.activeBounds[0]);
+      const dy = Math.abs(yMin - this.activeBounds[1]);
+      if (dx < minTileShift && dy < minTileShift) {
+        return;
+      }
+    }
+
     this._lastRequestKey = reqKey;
+
+    if (minTileShift > 0) {
+      // Load immediately without debounce starvation during flight
+      if (!this.isLoading) {
+        this._loadPatch(zoom, xMin, yMin, n);
+      }
+      return;
+    }
 
     clearTimeout(this._debounceTimer);
     this._debounceTimer = setTimeout(() => {
