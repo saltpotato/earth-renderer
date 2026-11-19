@@ -115,7 +115,10 @@ class TerraHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         tmp_in = None
-        tmp_out = cache_path + ".tmp.png"
+        is_jpg = cache_path.endswith((".jpg", ".jpeg"))
+        out_fmt = "jpg" if is_jpg else "png"
+        out_ctype = "image/jpeg" if is_jpg else "image/png"
+        tmp_out = cache_path + f".tmp.{out_fmt}"
         try:
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
                 tf.write(in_bytes)
@@ -128,7 +131,7 @@ class TerraHandler(http.server.SimpleHTTPRequestHandler):
                 "-m", ESRGAN_MODELS,
                 "-n", model,
                 "-t", "256",
-                "-f", "png",
+                "-f", out_fmt,
             ]
             with GPU_LOCK:
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -142,7 +145,7 @@ class TerraHandler(http.server.SimpleHTTPRequestHandler):
                 out_bytes = f.read()
 
             self.send_response(200)
-            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Type", out_ctype)
             self.send_header("Content-Length", str(len(out_bytes)))
             self.end_headers()
             self.wfile.write(out_bytes)
