@@ -1,0 +1,6 @@
+.DS_Store
+*.log
+textures/*.jpg
+textures/*.png
+textures/*.tif
+!textures/.gitkeep

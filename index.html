@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TERRA // Physically-Based Earth Raytracer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="viewport"></canvas>
+
+    <!-- Loading / Texture Status Overlay -->
+    <div id="loading-overlay" class="overlay">
+      <div class="loader-card">
+        <div class="spinner"></div>
+        <h2 id="loading-title">Lade 4K Satellitentexturen…</h2>
+        <p id="loading-sub">NASA Blue Marble · Night Lights · Elevation &amp; Clouds</p>
+      </div>
+    </div>
+
+    <!-- Top-Left Brand & Telemetry -->
+    <header class="hud-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <div>
+          <h1>TERRA RAYTRACER</h1>
+          <p class="subtitle">Rayleigh/Mie Atmosphäre · 4K Satelliten-Relief · Progressive Path/Raytracing</p>
+        </div>
+      </div>
+      <div class="telemetry" id="telemetry">
+        <span id="stat-mode" class="badge badge-live">LIVE VORSCHAU</span>
+        <span id="stat-res" class="mono">1280×720</span>
+        <span id="stat-alt" class="mono">ALT 12.400 km</span>
+      </div>
+    </header>
+
+    <!-- Render Progress Banner (shown during offline raytrace) -->
+    <div id="render-banner" class="render-banner hidden">
+      <div class="render-banner-top">
+        <div class="render-status-left">
+          <span class="pulse-dot"></span>
+          <strong id="render-status-text">Raytracing läuft…</strong>
+          <span id="render-spp-text" class="mono">0 / 64 SPP</span>
+          <span id="render-time-text" class="mono">0.0s</span>
+        </div>
+        <div class="render-actions">
+          <button id="btn-download" class="btn btn-success hidden">PNG speichern</button>
+          <button id="btn-back-live" class="btn btn-secondary hidden">Zurück zur Vorschau</button>
+          <button id="btn-cancel-render" class="btn btn-danger">Abbrechen</button>
+        </div>
+      </div>
+      <div class="progress-track">
+        <div id="render-progress-bar" class="progress-fill"></div>
+      </div>
+    </div>
+
+    <!-- Collapsible Right Control Panel -->
+    <aside id="panel" class="control-panel">
+      <div class="panel-header">
+        <span>Szene &amp; Render</span>
+        <button id="btn-toggle-panel" class="icon-btn" title="Panel ein-/ausblenden">✕</button>
+      </div>
+
+      <div class="panel-body">
+        <!-- Offline Raytrace Render Section -->
+        <section class="section highlight-section">
+          <h3>Raytrace Render</h3>
+          <div class="row-2">
+            <label class="field">
+              <span>Auflösung</span>
+              <select id="render-res">
+                <option value="1280x720">HD (1280×720)</option>
+                <option value="1920x1080" selected>Full HD (1920×1080)</option>
+                <option value="2560x1440">QHD (2560×1440)</option>
+                <option value="3840x2160">4K UHD (3840×2160)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Qualität (SPP)</span>
+              <select id="render-spp">
+                <option value="16">Schnell (16 SPP)</option>
+                <option value="48" selected>Hoch (48 SPP)</option>
+                <option value="96">Ultra (96 SPP)</option>
+                <option value="192">Kino (192 SPP)</option>
+              </select>
+            </label>
+          </div>
+          <button id="btn-render" class="btn btn-primary btn-full">
+            ✦ Raytrace Rendern
+          </button>
+          <p class="hint">
+            Berechnet 64-Step Rayleigh/Mie Atmosphäre, weiche Sonnenscheibe, Wolkenschatten &amp; Supersampling.
+          </p>
+        </section>
+
+        <!-- Camera Presets -->
+        <section class="section">
+          <h3>Kamera-Presets</h3>
+          <div class="preset-grid">
+            <button class="preset-btn" data-preset="europe-day">Europa &amp; Afrika</button>
+            <button class="preset-btn" data-preset="iss-orbit">ISS Horizon</button>
+            <button class="preset-btn" data-preset="twilight">Dämmerung</button>
+            <button class="preset-btn" data-preset="americas">Amerika</button>
+            <button class="preset-btn" data-preset="himalaya">Asien / Himalaya</button>
+            <button class="preset-btn" data-preset="night-europe">Nachtlichter</button>
+          </div>
+        </section>
+
+        <!-- Lighting & Sun -->
+        <section class="section">
+          <h3>Sonne &amp; Beleuchtung</h3>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Sonnen-Azimut</span>
+              <span class="mono" id="val-sun-az">48°</span>
+            </div>
+            <input type="range" id="sun-az" min="-180" max="180" step="0.5" value="48" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Sonnen-Elevation</span>
+              <span class="mono" id="val-sun-el">18°</span>
+            </div>
+            <input type="range" id="sun-el" min="-45" max="45" step="0.5" value="18" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Belichtung (Exposure)</span>
+              <span class="mono" id="val-exposure">1.25</span>
+            </div>
+            <input type="range" id="exposure" min="0.4" max="2.5" step="0.05" value="1.25" />
+          </div>
+        </section>
+
+        <!-- Atmosphere & Clouds -->
+        <section class="section">
+          <h3>Atmosphäre &amp; Wolken</h3>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Atmosphären-Dichte</span>
+              <span class="mono" id="val-atmo-density">1.10</span>
+            </div>
+            <input type="range" id="atmo-density" min="0.0" max="2.2" step="0.05" value="1.10" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Atmosphären-Höhe</span>
+              <span class="mono" id="val-atmo-height">1.35</span>
+            </div>
+            <input type="range" id="atmo-height" min="0.6" max="2.2" step="0.05" value="1.35" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Wolken-Deckung</span>
+              <span class="mono" id="val-cloud-cover">1.00</span>
+            </div>
+            <input type="range" id="cloud-cover" min="0.0" max="1.8" step="0.05" value="1.00" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Wolkenschatten</span>
+              <span class="mono" id="val-cloud-shadow">0.85</span>
+            </div>
+            <input type="range" id="cloud-shadow" min="0.0" max="1.0" step="0.05" value="0.85" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Wolken-Drift</span>
+              <span class="mono" id="val-cloud-offset">0°</span>
+            </div>
+            <input type="range" id="cloud-offset" min="0" max="360" step="1" value="0" />
+          </div>
+        </section>
+
+        <!-- Surface & Space -->
+        <section class="section">
+          <h3>Oberfläche &amp; Weltall</h3>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Gebirgs-Relief (Bump)</span>
+              <span class="mono" id="val-bump">1.20</span>
+            </div>
+            <input type="range" id="bump-strength" min="0.0" max="3.0" step="0.1" value="1.20" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Ozean-Glanz (Sun Glint)</span>
+              <span class="mono" id="val-ocean">1.00</span>
+            </div>
+            <input type="range" id="ocean-spec" min="0.0" max="2.0" step="0.05" value="1.00" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Nachtlichter (Städte)</span>
+              <span class="mono" id="val-lights">1.30</span>
+            </div>
+            <input type="range" id="night-lights" min="0.0" max="3.0" step="0.1" value="1.30" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Sterne &amp; Milchstraße</span>
+              <span class="mono" id="val-stars">1.00</span>
+            </div>
+            <input type="range" id="stars-intensity" min="0.0" max="2.5" step="0.05" value="1.00" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Kamera-Brennweite (FOV)</span>
+              <span class="mono" id="val-fov">38°</span>
+            </div>
+            <input type="range" id="cam-fov" min="15" max="75" step="1" value="38" />
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" id="auto-rotate" />
+            <span>Langsame Erdrotation (Vorschau)</span>
+          </label>
+        </section>
+
+        <!-- Custom 8K/16K Texture Drop -->
+        <section class="section">
+          <h3>Eigene Texturen (optional 8K/16K)</h3>
+          <div class="upload-row">
+            <label class="file-btn">
+              Tag-Map
+              <input type="file" id="file-day" accept="image/*" hidden />
+            </label>
+            <label class="file-btn">
+              Nacht-Map
+              <input type="file" id="file-night" accept="image/*" hidden />
+            </label>
+            <label class="file-btn">
+              Wolken
+              <input type="file" id="file-clouds" accept="image/*" hidden />
+            </label>
+          </div>
+          <p class="hint">
+            Standardmäßig werden 4K NASA Blue Marble Texturen geladen. Du kannst jederzeit eigene equirectangular 8K-Maps laden.
+          </p>
+        </section>
+      </div>
+    </aside>
+
+    <!-- Reopen Panel Button (when collapsed) -->
+    <button id="btn-open-panel" class="open-panel-btn hidden" title="Einstellungen öffnen">
+      ⚙ Steuerung
+    </button>
+
+    <!-- Bottom-Left Interaction Hint -->
+    <footer class="hud-footer">
+      <span>Ziehen: Orbit</span>
+      <span>·</span>
+      <span>Scrollen: Zoom</span>
+      <span>·</span>
+      <span>Shift + Ziehen: Sonne drehen</span>
+      <span>·</span>
+      <span>R: Raytrace Render</span>
+    </footer>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
