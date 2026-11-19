@@ -179,15 +179,15 @@
           <p id="ap-status" class="hint hidden"></p>
         </section>
 
-        <!-- Local Zero-Install Texture Enhancement & Cache -->
+        <!-- Local Zero-Install AI Texture Enhancement & Cache -->
         <section class="section ai-section">
-          <h3>✦ Lokale Textur-Veredelung</h3>
+          <h3>✦ Lokale KI-Textur-Veredelung</h3>
           <label class="field">
-            <span>Look / Schärfe</span>
+            <span>Modus</span>
             <select id="ai-style">
-              <option value="sharp">Klar &amp; Scharf (Dehaze)</option>
-              <option value="natgeo" selected>National Geographic (Lebendig)</option>
-              <option value="cinematic">Kino-Kontrast (Dramatisch)</option>
+              <option value="esrgan" selected>Real-ESRGAN x4 (Lokale M1-KI · 2048px)</option>
+              <option value="natgeo">National Geographic (Sofort · Dehaze)</option>
+              <option value="sharp">Klar &amp; Scharf (Sofort · Dehaze)</option>
             </select>
           </label>
           <label class="checkbox-row">
@@ -198,7 +198,7 @@
             <button id="btn-ai-enrich" class="btn btn-ai">
               ✦ Jetzt veredeln
             </button>
-            <button id="btn-ai-toggle" class="btn btn-secondary hidden" title="Original vs. Veredelt vergleichen">
+            <button id="btn-ai-toggle" class="btn btn-secondary hidden" title="Original vs. KI vergleichen">
               Original
             </button>
           </div>
@@ -207,7 +207,7 @@
             <button id="btn-ai-clear-cache" class="btn-link" title="Alle gespeicherten Textur-Kacheln löschen">Leeren</button>
           </div>
           <p id="ai-status" class="hint">
-            100 % lokal ohne API-Key: Dehazing, Schärfung &amp; DEM-Detail direkt in den Festplatten-/Browser-Cache.
+            Läuft 100 % lokal auf deiner Apple-Silicon-GPU (Real-ESRGAN) und speichert jede Kachel dauerhaft in <code>textures/ai_cache/</code>.
           </p>
         </section>
 

@@ -850,9 +850,10 @@ const aiStatusEl = document.getElementById('ai-status');
 aiStyleEl.value = renderer.aiEnricher.styleId;
 aiAutoEnrichEl.checked = renderer.aiEnricher.autoEnrich;
 
-renderer.aiEnricher.onCacheStatsChange = ({ count, disk }) => {
-  const mode = disk ? 'Disk + IDB' : 'Browser-IDB';
+renderer.aiEnricher.onCacheStatsChange = ({ count, disk, esrgan }) => {
+  const mode = esrgan ? 'Real-ESRGAN + Disk' : disk ? 'Disk + IDB' : 'Browser-IDB';
   aiCacheInfoEl.textContent = `Cache: ${count} Patches (${mode})`;
+  aiStyleEl.value = renderer.aiEnricher.styleId;
 };
 renderer.aiEnricher.initPersistentCache();
 

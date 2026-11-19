@@ -6,8 +6,13 @@ const IDB_NAME = 'terra_local_enh_v1';
 const IDB_STORE = 'patches';
 
 export const ENHANCE_STYLES = {
+  esrgan: {
+    label: 'Real-ESRGAN x4 (Lokale KI · 2048px)',
+    useEsrgan: true,
+    model: 'realesrgan-x4plus',
+  },
   sharp: {
-    label: 'Klar & Scharf (Dehaze)',
+    label: 'Klar & Scharf (Sofort · Dehaze)',
     dehaze: 0.24,
     sharpen: 1.15,
     vibrance: 0.18,
@@ -15,20 +20,12 @@ export const ENHANCE_STYLES = {
     contrast: 1.08,
   },
   natgeo: {
-    label: 'National Geographic (Lebendig)',
+    label: 'National Geographic (Sofort)',
     dehaze: 0.34,
     sharpen: 1.35,
     vibrance: 0.34,
     microDetail: 0.30,
     contrast: 1.14,
-  },
-  cinematic: {
-    label: 'Kino-Kontrast (Dramatisch)',
-    dehaze: 0.38,
-    sharpen: 1.45,
-    vibrance: 0.24,
-    microDetail: 0.36,
-    contrast: 1.20,
   },
 };
 
@@ -134,13 +131,14 @@ class TextureIDB {
 
 export class AiTextureEnricher {
   constructor() {
-    this.autoEnrich = true; // Fast & 100% local -> safe to enable seamlessly!
-    this.styleId = 'natgeo';
+    this.autoEnrich = true;
+    this.styleId = 'esrgan';
 
     this.cache = new Map();
     this.maxCache = 32;
     this.idb = new TextureIDB();
     this.diskCacheSupported = false;
+    this.esrganSupported = false;
     this.diskFiles = new Set();
     this.cachedCount = 0;
 
@@ -160,10 +158,15 @@ export class AiTextureEnricher {
       if (resp.ok) {
         const data = await resp.json();
         this.diskCacheSupported = true;
+        this.esrganSupported = Boolean(data.esrgan);
         this.diskFiles = new Set(data.files || []);
       }
     } catch {
       this.diskCacheSupported = false;
+      this.esrganSupported = false;
+    }
+    if (!this.esrganSupported && this.styleId === 'esrgan') {
+      this.styleId = 'natgeo';
     }
     await this._refreshCacheStats();
   }
@@ -175,6 +178,7 @@ export class AiTextureEnricher {
       this.onCacheStatsChange({
         count: this.cachedCount,
         disk: this.diskCacheSupported,
+        esrgan: this.esrganSupported,
       });
     }
   }
@@ -401,6 +405,15 @@ export class AiTextureEnricher {
     return outCanvas;
   }
 
+  async _canvasToJpegBlob(srcCanvas, targetSize = 512) {
+    const tmp = document.createElement('canvas');
+    tmp.width = targetSize;
+    tmp.height = targetSize;
+    const ctx = tmp.getContext('2d');
+    ctx.drawImage(srcCanvas, 0, 0, targetSize, targetSize);
+    return new Promise((resolve) => tmp.toBlob(resolve, 'image/jpeg', 0.92));
+  }
+
   async enrichPatch({ patchKey, satCanvas, demCanvas, zoom }) {
     const cacheKey = this._makeKey(patchKey);
     const cached = await this.getCachedAsync(patchKey);
@@ -418,17 +431,40 @@ export class AiTextureEnricher {
     const t0 = performance.now();
     try {
       const style = ENHANCE_STYLES[this.styleId] || ENHANCE_STYLES.natgeo;
-      const outCanvas = this._enhanceCanvasLocally(satCanvas, demCanvas, style);
+      let blob;
 
-      const blob = await new Promise((resolve) => outCanvas.toBlob(resolve, 'image/png'));
+      if (style.useEsrgan && this.esrganSupported) {
+        if (this.onStatus) this.onStatus(`Real-ESRGAN (M1 GPU) reichert Z${zoom} auf 2048px an…`);
+        // 512x512 -> 4x Real-ESRGAN neural super-resolution -> crisp 2048x2048 PNG!
+        const inBlob = await this._canvasToJpegBlob(satCanvas, 512);
+        const filename = sanitizeCacheFilename(cacheKey);
+        const resp = await fetch(
+          `/api/ai-upscale?key=${encodeURIComponent(filename)}&model=${encodeURIComponent(style.model)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'image/jpeg' },
+            body: inBlob,
+          }
+        );
+        if (!resp.ok) {
+          throw new Error(`Real-ESRGAN HTTP ${resp.status}`);
+        }
+        blob = await resp.blob();
+        this.diskFiles.add(filename);
+        await this.idb.set(cacheKey, blob);
+        await this._refreshCacheStats();
+      } else {
+        const outCanvas = this._enhanceCanvasLocally(satCanvas, demCanvas, style);
+        blob = await new Promise((resolve) => outCanvas.toBlob(resolve, 'image/png'));
+        await this._persistBlob(cacheKey, blob);
+      }
+
       const img = await blobToImage(blob);
-
       this._setRamCache(cacheKey, img);
-      await this._persistBlob(cacheKey, blob);
 
-      const ms = Math.round(performance.now() - t0);
-      const loc = this.diskCacheSupported ? 'Disk + IDB' : 'Browser-IDB';
-      if (this.onStatus) this.onStatus(`✦ Lokal veredelt (${loc} · Z${zoom} · ${ms}ms)`);
+      const sec = ((performance.now() - t0) / 1000).toFixed(1);
+      const label = style.useEsrgan && this.esrganSupported ? 'Real-ESRGAN 2048px' : 'Lokal';
+      if (this.onStatus) this.onStatus(`✦ ${label} gespeichert (Z${zoom} · ${sec}s)`);
       return img;
     } finally {
       this.isBusy = false;

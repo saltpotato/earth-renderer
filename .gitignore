@@ -2,6 +2,7 @@
 .env
 .env.*
 *.log
+tools/
 textures/*.jpg
 textures/*.png
 textures/*.tif
