@@ -153,15 +153,19 @@
             </select>
           </label>
           <label class="field">
-            <span>Beliebte Routen</span>
+            <span>Beliebte &amp; letzte Routen</span>
             <select id="ap-route-preset">
-              <option value="muc-mxp" selected>München → Mailand (Alpen)</option>
-              <option value="zrh-nce">Zürich → Nizza (Matterhorn)</option>
-              <option value="inn-vce">Innsbruck → Venedig</option>
-              <option value="las-gcn">Las Vegas → Grand Canyon</option>
-              <option value="tyo-kix">Tokio → Kyoto (Mt. Fuji)</option>
-              <option value="ber-par">Berlin → Paris</option>
-              <option value="custom">Eigene Route (Von / Nach)…</option>
+              <optgroup id="ap-recent-group" label="Zuletzt geflogen" hidden></optgroup>
+              <optgroup label="Beliebte Routen">
+                <option value="muc-mxp" selected>München → Mailand (Alpen)</option>
+                <option value="zrh-nce">Zürich → Nizza (Matterhorn)</option>
+                <option value="tle-moq">Toliara → Morondava (Madagaskar)</option>
+                <option value="inn-vce">Innsbruck → Venedig</option>
+                <option value="las-gcn">Las Vegas → Grand Canyon</option>
+                <option value="tyo-kix">Tokio → Kyoto (Mt. Fuji)</option>
+                <option value="ber-par">Berlin → Paris</option>
+                <option value="custom">Eigene Route (Von / Nach)…</option>
+              </optgroup>
             </select>
           </label>
           <div class="row-2">

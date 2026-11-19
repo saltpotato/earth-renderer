@@ -253,10 +253,63 @@ document.getElementById('tile-stream-enabled').addEventListener('change', (e) =>
 // ---------------------------------------------------------------------------
 const apAircraftEl = document.getElementById('ap-aircraft');
 const apRoutePresetEl = document.getElementById('ap-route-preset');
+const apRecentGroupEl = document.getElementById('ap-recent-group');
 const apFromEl = document.getElementById('ap-from');
 const apToEl = document.getElementById('ap-to');
 const apStatusEl = document.getElementById('ap-status');
 const btnStartAutopilot = document.getElementById('btn-start-autopilot');
+
+const RECENT_ROUTES_KEY = 'terra_recent_routes_v1';
+const MAX_RECENT_ROUTES = 5;
+
+function loadRecentRoutes() {
+  try {
+    const raw = localStorage.getItem(RECENT_ROUTES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+let recentRoutes = loadRecentRoutes();
+
+function saveRecentRoute(from, to) {
+  const id = `recent:${from.name.toLowerCase()}->${to.name.toLowerCase()}`;
+  const entry = {
+    id,
+    label: `${from.name} → ${to.name}`,
+    from: { name: from.name, lat: from.lat, lon: from.lon },
+    to: { name: to.name, lat: to.lat, lon: to.lon },
+  };
+  recentRoutes = [entry, ...recentRoutes.filter((r) => r.id !== id)].slice(0, MAX_RECENT_ROUTES);
+  try {
+    localStorage.setItem(RECENT_ROUTES_KEY, JSON.stringify(recentRoutes));
+  } catch {
+    // ignore storage quota errors
+  }
+  renderRecentRoutesDropdown(id);
+}
+
+function renderRecentRoutesDropdown(selectId = null) {
+  apRecentGroupEl.innerHTML = '';
+  if (recentRoutes.length === 0) {
+    apRecentGroupEl.hidden = true;
+    return;
+  }
+  apRecentGroupEl.hidden = false;
+  for (const r of recentRoutes) {
+    const opt = document.createElement('option');
+    opt.value = r.id;
+    opt.textContent = r.label;
+    apRecentGroupEl.appendChild(opt);
+  }
+  if (selectId) {
+    apRoutePresetEl.value = selectId;
+  }
+}
+
+renderRecentRoutesDropdown();
 
 const apHud = document.getElementById('autopilot-hud');
 const apHudAircraft = document.getElementById('ap-hud-aircraft');
@@ -284,8 +337,13 @@ async function geocodePlace(query) {
   };
 }
 
+function getRouteByKey(key) {
+  if (SCENIC_ROUTES[key]) return SCENIC_ROUTES[key];
+  return recentRoutes.find((r) => r.id === key) || null;
+}
+
 apRoutePresetEl.addEventListener('change', () => {
-  const r = SCENIC_ROUTES[apRoutePresetEl.value];
+  const r = getRouteByKey(apRoutePresetEl.value);
   if (r) {
     apFromEl.value = r.from.name;
     apToEl.value = r.to.name;
@@ -337,10 +395,13 @@ btnStartAutopilot.addEventListener('click', async () => {
   apStatusEl.classList.add('hidden');
 
   let fromObj, toObj;
-  const preset = SCENIC_ROUTES[presetKey];
-  if (preset && preset.from.name === fromText && preset.to.name === toText) {
-    fromObj = preset.from;
-    toObj = preset.to;
+  const knownRoute = getRouteByKey(presetKey);
+  if (knownRoute && knownRoute.from.name === fromText && knownRoute.to.name === toText) {
+    fromObj = knownRoute.from;
+    toObj = knownRoute.to;
+    if (presetKey.startsWith('recent:')) {
+      saveRecentRoute(fromObj, toObj); // bump to top of LRU
+    }
   } else {
     if (!fromText || !toText) {
       apStatusEl.textContent = 'Bitte Start- und Zielstadt eingeben.';
@@ -352,6 +413,7 @@ btnStartAutopilot.addEventListener('click', async () => {
     try {
       [fromObj, toObj] = await Promise.all([geocodePlace(fromText), geocodePlace(toText)]);
       apStatusEl.classList.add('hidden');
+      saveRecentRoute(fromObj, toObj);
     } catch (err) {
       apStatusEl.textContent = `Route fehlgeschlagen: ${err.message}`;
       return;

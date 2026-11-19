@@ -69,6 +69,11 @@ export const SCENIC_ROUTES = {
     from: { name: 'Berlin', lat: 52.5200, lon: 13.4050 },
     to:   { name: 'Paris',  lat: 48.8566, lon: 2.3522 },
   },
+  'tle-moq': {
+    label: 'Toliara → Morondava (Madagaskar)',
+    from: { name: 'Toliara',   lat: -23.3500, lon: 43.6667 },
+    to:   { name: 'Morondava', lat: -20.2833, lon: 44.2833 },
+  },
 };
 
 function latLonToVec3(latDeg, lonDeg) {
