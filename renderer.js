@@ -149,6 +149,12 @@ export class EarthRaytracer {
     this.extHalfFloat = gl.getExtension('EXT_color_buffer_half_float');
     this.extFloatLinear = gl.getExtension('OES_texture_float_linear');
     this.extHalfFloatLinear = gl.getExtension('OES_texture_half_float_linear');
+    this.extAniso =
+      gl.getExtension('EXT_texture_filter_anisotropic') ||
+      gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic');
+    this.maxAniso = this.extAniso
+      ? Math.min(16, gl.getParameter(this.extAniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT))
+      : 1;
 
     this.rayProgram = createProgram(gl, fullscreenVert, earthRaytraceFrag);
     this.displayProgram = createProgram(gl, fullscreenVert, displayFrag);
@@ -183,8 +189,8 @@ export class EarthRaytracer {
     // Dynamic Deep-Zoom Tile Streamer (Esri World Imagery + AWS Terrarium DEM)
     this.onTileStatusChange = null;
     this.tileStreamer = new DynamicTileStreamer(({ satCanvas, demCanvas, zoom }) => {
-      this._uploadTexture(this.textures.tileSat, satCanvas, true);
-      this._uploadTexture(this.textures.tileDem, demCanvas, true);
+      this._uploadTexture(this.textures.tileSat, satCanvas, true, true);
+      this._uploadTexture(this.textures.tileDem, demCanvas, true, false);
       if (this.onTileStatusChange) {
         this.onTileStatusChange({ zoom, loading: false });
       }
@@ -275,15 +281,24 @@ export class EarthRaytracer {
     return tex;
   }
 
-  _uploadTexture(tex, source, clampS = false) {
+  _uploadTexture(tex, source, clampS = false, useMipmaps = true) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, clampS ? gl.CLAMP_TO_EDGE : gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if (useMipmaps) {
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      if (this.extAniso && this.maxAniso > 1) {
+        gl.texParameterf(gl.TEXTURE_2D, this.extAniso.TEXTURE_MAX_ANISOTROPY_EXT, this.maxAniso);
+      }
+    } else {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    }
   }
 
   async loadDefaultTextures(onStatus) {

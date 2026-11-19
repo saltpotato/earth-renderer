@@ -678,6 +678,9 @@ void main() {
     : vec2(-1.0);
 
   float jitter = (uHighQuality == 1) ? hashSeed : 0.5;
+  // Interleaved gradient noise breaks up any coherent raymarch ring patterns in live preview
+  float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  float terrJitter = (uHighQuality == 1) ? hashSeed : ign;
 
   // Optional 3D Heightfield Raymarching over active AWS Terrarium DEM patch
   float tSurface = earthHit.x;
@@ -688,7 +691,7 @@ void main() {
     if (topHit.y > 0.0) {
       float tStart = max(topHit.x, 0.0);
       float tEnd = (earthHit.x > 0.0) ? earthHit.x : topHit.y;
-      float tTerr = raymarchTerrain3D(ro, rd, uCamAlt, tStart, tEnd, jitter);
+      float tTerr = raymarchTerrain3D(ro, rd, uCamAlt, tStart, tEnd, terrJitter);
       if (tTerr > 0.0) {
         tSurface = tTerr;
         hitTerrain3D = true;
@@ -721,16 +724,18 @@ void main() {
     float landMask = 1.0 - oceanMask;
 
     // Dynamic Deep-Zoom Satellite Tile Patch (Esri World Imagery + AWS Terrarium DEM)
+    // Sample with hardware trilinear mipmaps + 16x anisotropic filtering to eliminate Moiré waves
     float tileMask = 0.0;
-    vec2 tileUv = vec2(-1.0);
+    vec2 tileUv = (uTileBounds.w > 1.5)
+      ? sphereToMercatorTileUv(N, uEarthRot, uTileBounds)
+      : vec2(-1.0);
+    vec3 satSRGB = texture(uTileSatTex, clamp(tileUv, 0.0, 1.0)).rgb;
     if (uTileBlend > 0.001 && uTileBounds.w > 1.5) {
-      tileUv = sphereToMercatorTileUv(N, uEarthRot, uTileBounds);
       if (tileUv.x > 0.0 && tileUv.x < 1.0 && tileUv.y > 0.0 && tileUv.y < 1.0) {
         float fx = smoothstep(0.0, 0.10, tileUv.x) * smoothstep(1.0, 0.90, tileUv.x);
         float fy = smoothstep(0.0, 0.10, tileUv.y) * smoothstep(1.0, 0.90, tileUv.y);
         tileMask = fx * fy * uTileBlend;
 
-        vec3 satSRGB = textureLod(uTileSatTex, tileUv, 0.0).rgb;
         vec3 satLinear = pow(max(satSRGB, 0.0), vec3(2.2));
         dayAlbedo = mix(dayAlbedo, satLinear, tileMask);
       }
