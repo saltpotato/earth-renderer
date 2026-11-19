@@ -168,7 +168,7 @@ export class EarthRaytracer {
       'uBumpStrength', 'uOceanSpec', 'uNightLights', 'uStarsIntensity', 'uAuroraIntensity',
       'uMoonEnabled', 'uMoonPos', 'uMoonRadius',
       'uSampleIndex', 'uHighQuality', 'uHasCustomClouds',
-      'uTileBounds', 'uTileRef', 'uTileBlend', 'uTerrainExag',
+      'uTileBounds', 'uTileRef', 'uTileBlend',
       'uDayTex', 'uNightTex', 'uBrcTex', 'uCloudTex', 'uMoonTex', 'uTileSatTex', 'uTileDemTex',
     ]);
     this.uDisp = this._getUniforms(this.displayProgram, [
@@ -256,7 +256,6 @@ export class EarthRaytracer {
       cloudCover: 0.90,
       cloudShadow: 0.85,
       bumpStrength: 1.35,
-      terrainExag: 1.60,
       oceanSpec: 1.15,
       nightLights: 1.65,
       starsIntensity: 1.10,
@@ -777,7 +776,6 @@ export class EarthRaytracer {
     gl.uniform4fv(this.uRay.uTileBounds, this.tileStreamer.activeBounds);
     gl.uniform4fv(this.uRay.uTileRef, this.tileStreamer.activeRef);
     gl.uniform1f(this.uRay.uTileBlend, tileBlend);
-    gl.uniform1f(this.uRay.uTerrainExag, this.state.terrainExag);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.textures.day);

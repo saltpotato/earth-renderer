@@ -56,7 +56,6 @@ uniform int uHasCustomClouds;
 uniform vec4 uTileBounds;      // xMin, yMin, gridSize, nTiles
 uniform vec4 uTileRef;         // refLonRad, refLatRad, cosRefLat, sinRefLat (float64 origin)
 uniform float uTileBlend;      // 0..1 blend weight for dynamic satellite/DEM patch
-uniform float uTerrainExag;    // 0 = flat sphere + bump, 1..4 = true 3D DEM raymarched mountains!
 
 uniform sampler2D uDayTex;
 uniform sampler2D uNightTex;
@@ -211,87 +210,6 @@ float sampleTerrariumMeters(vec2 uv) {
   float h01 = decodeTerrariumMeters(texelFetch(uTileDemTex, p01, 0).rgb);
   float h11 = decodeTerrariumMeters(texelFetch(uTileDemTex, p11, 0).rgb);
   return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
-}
-
-// Zero-cancellation radial altitude above R_EARTH = 1.0 along camera ray
-float rayAltFromCam(vec3 ro, vec3 rd, float camAlt, float t) {
-  vec3 p = ro + rd * t;
-  float r2Minus1 = camAlt * (camAlt + 2.0) + t * (2.0 * dot(ro, rd) + t);
-  return r2Minus1 / (length(p) + 1.0);
-}
-
-// Sample 3D DEM height in Earth-radii units (fast 1-tap in live preview, bilinear in HQ)
-float sampleTerrainHeightRadii(vec3 n, bool fastTap) {
-  vec2 tuv = sphereToMercatorTileUv(n, uEarthRot, uTileBounds);
-  if (tuv.x <= 0.002 || tuv.x >= 0.998 || tuv.y <= 0.002 || tuv.y >= 0.998) {
-    return 0.0;
-  }
-  float fx = smoothstep(0.002, 0.08, tuv.x) * smoothstep(0.998, 0.92, tuv.x);
-  float fy = smoothstep(0.002, 0.08, tuv.y) * smoothstep(0.998, 0.92, tuv.y);
-  float meters = max(0.0, fastTap ? sampleTerrariumFast(tuv) : sampleTerrariumMeters(tuv));
-  return (meters / 6371000.0) * uTerrainExag * fx * fy * uTileBlend;
-}
-
-// 3D Heightfield Raymarching over the spherical DEM shell (fast adaptive steps!)
-float raymarchTerrain3D(vec3 ro, vec3 rd, float camAlt, float tStart, float tEnd, float jitter) {
-  if (tEnd <= tStart) return -1.0;
-  float tLimit = tStart + min(tEnd - tStart, 0.042);
-  int steps = (uHighQuality == 1) ? 96 : 36;
-  float stepGrowth = (uHighQuality == 1) ? 0.028 : 0.078;
-  float minStep = (uHighQuality == 1) ? 0.00005 : 0.00014;
-  int binSteps = (uHighQuality == 1) ? 8 : 5;
-
-  float tPrev = tStart;
-  float t = tStart + minStep * jitter;
-  for (int i = 0; i < 96; i++) {
-    if (i >= steps || t > tLimit) break;
-    vec3 p = ro + rd * t;
-    float hRay = rayAltFromCam(ro, rd, camAlt, t);
-    float hTerr = sampleTerrainHeightRadii(normalize(p), true);
-
-    if (hRay <= hTerr) {
-      float lo = tPrev;
-      float hi = t;
-      for (int b = 0; b < 8; b++) {
-        if (b >= binSteps) break;
-        float mid = 0.5 * (lo + hi);
-        float hm = rayAltFromCam(ro, rd, camAlt, mid);
-        float ht = sampleTerrainHeightRadii(normalize(ro + rd * mid), uHighQuality == 0);
-        if (hm <= ht) {
-          hi = mid;
-        } else {
-          lo = mid;
-        }
-      }
-      return 0.5 * (lo + hi);
-    }
-    tPrev = t;
-    t += max(minStep, (t - tStart) * stepGrowth);
-  }
-  return -1.0;
-}
-
-// Soft 3D terrain cast shadows (fast 1-tap with altitude bias)
-float traceTerrainShadow(vec3 hitPos, float hitAlt, vec3 sunDir) {
-  if (uTerrainExag <= 0.01 || uTileBlend <= 0.05) return 1.0;
-  float dMax = 0.00145 * uTerrainExag;
-  float baseAlt = max(hitAlt, sampleTerrainHeightRadii(normalize(hitPos), true)) + 0.000010;
-  int steps = (uHighQuality == 1) ? 14 : 8;
-  float shadow = 1.0;
-  float t = 0.00014;
-  for (int i = 0; i < 14; i++) {
-    if (i >= steps) break;
-    vec3 p = hitPos + sunDir * t;
-    float r2Minus1 = baseAlt * (baseAlt + 2.0) + t * (2.0 * dot(hitPos, sunDir) + t);
-    float hRay = r2Minus1 / (length(p) + 1.0);
-    if (hRay > dMax) break;
-    float hTerr = sampleTerrainHeightRadii(normalize(p), true);
-    float diff = hRay - hTerr;
-    if (diff < -0.000004) return 0.16;
-    shadow = min(shadow, clamp(0.16 + (diff / (t * 0.14 + 1e-5)), 0.16, 1.0));
-    t *= (uHighQuality == 1) ? 1.45 : 1.72;
-  }
-  return shadow;
 }
 
 vec2 intersectSphereAt(vec3 ro, vec3 rd, vec3 center, float r) {
@@ -789,27 +707,7 @@ void main() {
     : vec2(-1.0);
 
   float jitter = (uHighQuality == 1) ? hashSeed : 0.5;
-  // Interleaved gradient noise breaks up any coherent raymarch ring patterns in live preview
-  float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-  float terrJitter = (uHighQuality == 1) ? hashSeed : ign;
-
-  // Optional 3D Heightfield Raymarching over active AWS Terrarium DEM patch
   float tSurface = earthHit.x;
-  bool hitTerrain3D = false;
-  if (uTerrainExag > 0.01 && uTileBlend > 0.02 && uTileBounds.w >= 16.0 && uCamAlt < 0.25) {
-    float dMaxElev = 0.00145 * uTerrainExag;
-    vec2 topHit = intersectSphereFromCam(ro, rd, uCamAlt, dMaxElev);
-    if (topHit.y > 0.0) {
-      float tStart = max(topHit.x, 0.0);
-      float tEnd = (earthHit.x > 0.0) ? earthHit.x : topHit.y;
-      float tTerr = raymarchTerrain3D(ro, rd, uCamAlt, tStart, tEnd, terrJitter);
-      if (tTerr > 0.0) {
-        tSurface = tTerr;
-        hitTerrain3D = true;
-      }
-    }
-  }
-
   bool hitEarth = tSurface > 0.0;
   bool hitMoon = moonHit.x > 0.0 && (!hitEarth || moonHit.x < tSurface);
 
@@ -817,10 +715,9 @@ void main() {
 
   if (hitEarth && !hitMoon) {
     // -----------------------------------------------------------------------
-    // Ray hits Earth Surface (or 3D Raymarched Mountain Terrain)
+    // Ray hits Earth Surface
     // -----------------------------------------------------------------------
     vec3 hitPos = ro + rd * tSurface;
-    float hitAlt = hitTerrain3D ? rayAltFromCam(ro, rd, uCamAlt, tSurface) : 0.0;
     vec3 N = normalize(hitPos);
     vec3 V = -rd;
     vec2 uv = sphereToUv(N, uEarthRot);
@@ -878,7 +775,7 @@ void main() {
 
         float cosLat = max(0.2, sqrt(max(0.0, 1.0 - N.y * N.y)));
         float spanMeters = max(12.0, (4.0 * 156543.0 * cosLat) / uTileBounds.w);
-        float slopeBoost = hitTerrain3D ? max(uTerrainExag, 1.0) : (uBumpStrength * 1.45);
+        float slopeBoost = uBumpStrength * 1.45;
         float sx = clamp(((dR - dL) / spanMeters) * slopeBoost, -3.5, 3.5);
         float sy = clamp(((dN - dS) / spanMeters) * slopeBoost, -3.5, 3.5);
         vec3 Nlocal = normalize(N - (sx * T + sy * B));
@@ -918,13 +815,10 @@ void main() {
       }
     }
 
-    // Real 3D mountain self-shadowing across valleys
-    float terrainShadow = hitTerrain3D ? traceTerrainShadow(hitPos, hitAlt, sunDir) : 1.0;
-
     float NdotL = max(dot(Nsurf, sunDir), 0.0);
     float macroNdotL = dot(N, sunDir);
     float horizonVis = smoothstep(-0.04, 0.06, macroNdotL);
-    vec3 directLight = vec3(3.85) * sunTrans * cloudShadowFactor * terrainShadow * horizonVis;
+    vec3 directLight = vec3(3.85) * sunTrans * cloudShadowFactor * horizonVis;
 
     float lum = dot(dayAlbedo, vec3(0.2126, 0.7152, 0.0722));
     vec3 vividAlbedo = mix(vec3(lum), dayAlbedo, mix(1.12, 1.28, landMask));
@@ -932,9 +826,7 @@ void main() {
 
     vec3 diffuse = (vividAlbedo / PI) * NdotL * directLight;
     vec3 skyAmbient = vec3(0.014, 0.032, 0.075) * uAtmoDensity * smoothstep(-0.14, 0.35, macroNdotL);
-    // Slightly richer sky-fill in shadowed alpine valleys when zoomed into 3D terrain
-    float valleyFill = hitTerrain3D ? 1.85 : 1.0;
-    vec3 surfColor = diffuse + vividAlbedo * skyAmbient * valleyFill * (0.35 + 0.65 * cloudShadowFactor);
+    vec3 surfColor = diffuse + vividAlbedo * skyAmbient * (0.35 + 0.65 * cloudShadowFactor);
 
     if (oceanMask > 0.01 && uOceanSpec > 0.001 && NdotL > 0.0) {
       vec3 H = normalize(V + sunDir);

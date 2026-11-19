@@ -191,7 +191,6 @@ try {
 const sliderBindings = [
   { id: 'cam-tilt', valId: 'val-tilt', key: 'camTiltDeg', fmt: (v) => `${Math.round(v)}°` },
   { id: 'cam-heading', valId: 'val-heading', key: 'camHeadingDeg', fmt: (v) => `${Math.round(v)}°` },
-  { id: 'terrain-exag', valId: 'val-terrain-exag', key: 'terrainExag', fmt: (v) => `${v.toFixed(1)}×` },
   { id: 'moon-angle', valId: 'val-moon-angle', key: 'moonAngleDeg', fmt: (v) => `${Math.round(v)}°` },
   { id: 'moon-dist', valId: 'val-moon-dist', key: 'moonDist', fmt: (v) => `${v.toFixed(1)} R⊕` },
   { id: 'aurora-intensity', valId: 'val-aurora', key: 'auroraIntensity', fmt: (v) => v.toFixed(2) },
