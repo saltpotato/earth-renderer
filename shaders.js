@@ -32,6 +32,7 @@ uniform float uTanHalfFov;
 uniform vec3 uSunDir;
 uniform float uEarthRot;
 uniform float uCloudOffset;
+uniform float uTime;
 
 uniform float uAtmoDensity;
 uniform float uAtmoHeight;
@@ -41,6 +42,11 @@ uniform float uBumpStrength;
 uniform float uOceanSpec;
 uniform float uNightLights;
 uniform float uStarsIntensity;
+uniform float uAuroraIntensity;
+
+uniform int uMoonEnabled;
+uniform vec3 uMoonPos;
+uniform float uMoonRadius;
 
 uniform int uSampleIndex;
 uniform int uHighQuality;
@@ -49,7 +55,8 @@ uniform int uHasCustomClouds;
 uniform sampler2D uDayTex;
 uniform sampler2D uNightTex;
 uniform sampler2D uBrcTex;     // R: elevation/bump, G: roughness, B: clouds
-uniform sampler2D uCloudTex;   // Optional custom cloud texture
+uniform sampler2D uCloudTex;   // Optional custom cloud texture (e.g. 8K clouds)
+uniform sampler2D uMoonTex;    // Lunar albedo / crater map
 
 const float PI = 3.14159265359;
 const float TWO_PI = 6.28318530718;
@@ -122,6 +129,16 @@ vec2 intersectSphere(vec3 ro, vec3 rd, float r) {
   return vec2(-b - s, -b + s);
 }
 
+vec2 intersectSphereAt(vec3 ro, vec3 rd, vec3 center, float r) {
+  vec3 oc = ro - center;
+  float b = dot(oc, rd);
+  float c = dot(oc, oc) - r * r;
+  float h = b * b - c;
+  if (h < 0.0) return vec2(-1.0);
+  float s = sqrt(h);
+  return vec2(-b - s, -b + s);
+}
+
 vec3 rotateY(vec3 v, float a) {
   float c = cos(a);
   float s = sin(a);
@@ -141,7 +158,6 @@ float sampleCloudDensity(vec3 n) {
     ? textureLod(uCloudTex, uv, 0.0).r
     : textureLod(uBrcTex, uv, 0.0).b;
 
-  // Add subtle high-frequency procedural wispiness so clouds stay crisp up close
   float detail = fbm3D(rotateY(n, uEarthRot + uCloudOffset) * 34.0);
   float c = raw * mix(0.84, 1.18, detail);
   c = clamp(c * uCloudCover, 0.0, 1.0);
@@ -162,9 +178,8 @@ vec3 renderStarLayer(vec3 rd, float scale, float threshold, float brightness) {
   vec3 offset = (rnd - 0.5) * 0.65;
   float d = length(f - offset);
   float size = mix(0.028, 0.085, fract(rnd.y * 19.3));
-  float star = exp(- (d * d) / (size * size));
+  float star = exp(-(d * d) / (size * size));
 
-  // Realistic star spectral color (O/B blue -> G white -> K/M amber)
   float temp = fract(rnd.z * 37.1);
   vec3 col = mix(vec3(0.68, 0.80, 1.0), vec3(1.0, 0.96, 0.90), smoothstep(0.0, 0.55, temp));
   col = mix(col, vec3(1.0, 0.72, 0.48), smoothstep(0.55, 1.0, temp));
@@ -182,7 +197,6 @@ vec3 renderSpace(vec3 rd, vec3 sunDir) {
     stars += renderStarLayer(rd, 260.0, 0.955, 0.72);
     stars += renderStarLayer(rd, 480.0, 0.945, 0.38);
 
-    // Subtle Milky Way galactic band
     vec3 galDir = normalize(vec3(
       rd.x * 0.82 - rd.y * 0.57,
       rd.x * 0.57 + rd.y * 0.82,
@@ -196,7 +210,6 @@ vec3 renderSpace(vec3 rd, vec3 sunDir) {
     col += (stars + mwColor * band * rift * 0.85) * uStarsIntensity;
   }
 
-  // Solar disk & corona
   float sunCos = max(dot(rd, sunDir), 0.0);
   float sunDisk = smoothstep(0.99978, 0.99993, sunCos);
   float corona1 = pow(sunCos, 640.0) * 1.4;
@@ -205,6 +218,135 @@ vec3 renderSpace(vec3 rd, vec3 sunDir) {
   col += sunCol * (sunDisk * 28.0 + corona1 + corona2 * vec3(1.0, 0.88, 0.74));
 
   return col;
+}
+
+// ---------------------------------------------------------------------------
+// Raytraced Moon (Lommel-Seeliger Regolith + Crater Relief + Earthshine)
+// ---------------------------------------------------------------------------
+vec3 shadeMoon(vec3 hitPos, vec3 rd, vec3 sunDir) {
+  vec3 N = normalize(hitPos - uMoonPos);
+  vec3 V = -rd;
+  vec2 uv = sphereToUv(N, 1.2);
+
+  vec3 moonSRGB = textureLod(uMoonTex, uv, 0.0).rgb;
+  vec3 albedo = pow(max(moonSRGB, 0.0), vec3(2.2));
+
+  // Crater relief from luminance gradient
+  vec3 upRef = abs(N.y) < 0.995 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  vec3 T = normalize(cross(upRef, N));
+  vec3 B = cross(N, T);
+  float eps = 0.0022;
+  float hL = textureLod(uMoonTex, sphereToUv(normalize(N - T * eps), 1.2), 0.0).r;
+  float hR = textureLod(uMoonTex, sphereToUv(normalize(N + T * eps), 1.2), 0.0).r;
+  float hD = textureLod(uMoonTex, sphereToUv(normalize(N - B * eps), 1.2), 0.0).r;
+  float hU = textureLod(uMoonTex, sphereToUv(normalize(N + B * eps), 1.2), 0.0).r;
+  vec3 Ncrater = normalize(N - ((hR - hL) * T + (hU - hD) * B) * 2.6);
+
+  float NdotL = max(dot(Ncrater, sunDir), 0.0);
+  float NdotV = max(dot(Ncrater, V), 0.001);
+  float macroNdotL = dot(N, sunDir);
+
+  // Lommel-Seeliger + subtle Lambert blend (authentic powdery lunar regolith)
+  float ls = NdotL / max(NdotL + NdotV, 0.08);
+  float lunarDiff = mix(NdotL, ls * 1.35, 0.65) * smoothstep(-0.02, 0.04, macroNdotL);
+
+  // Check if Earth eclipses the Moon (subtle coppery lunar eclipse shadow!)
+  vec2 eclipseHit = intersectSphere(hitPos, sunDir, R_EARTH);
+  vec3 sunColor = vec3(2.15, 2.10, 2.02);
+  if (eclipseHit.x > 0.0) {
+    // Penumbra / umbra reddening from Earth's atmosphere
+    vec3 closest = hitPos + sunDir * eclipseHit.x;
+    float missDist = length(cross(hitPos, sunDir));
+    float penumbra = smoothstep(R_EARTH * 0.92, R_EARTH * 1.03, missDist);
+    sunColor = mix(vec3(0.18, 0.035, 0.012), sunColor, penumbra);
+  }
+
+  // Subtle blue Earthshine on the Moon's dark hemisphere
+  vec3 dirToEarth = normalize(-hitPos);
+  float earthLit = max(dot(normalize(uMoonPos), sunDir) * -0.5 + 0.5, 0.0);
+  float earthBounce = max(dot(N, dirToEarth), 0.0) * earthLit * 0.035;
+  vec3 earthshine = vec3(0.28, 0.52, 0.95) * earthBounce;
+
+  return albedo * (lunarDiff * sunColor + earthshine);
+}
+
+// ---------------------------------------------------------------------------
+// Volumetric 3D Aurora Borealis & Australis
+// ---------------------------------------------------------------------------
+vec3 integrateAurora(vec3 ro, vec3 rd, float tMaxHit, vec3 sunDir, float jitter) {
+  if (uAuroraIntensity <= 0.001) return vec3(0.0);
+
+  float rInner = R_EARTH + 0.012 * max(uAtmoHeight, 0.6);
+  float rOuter = R_EARTH + 0.044 * max(uAtmoHeight, 0.6);
+
+  vec2 outerHit = intersectSphere(ro, rd, rOuter);
+  if (outerHit.y <= 0.0) return vec3(0.0);
+
+  float tStart = max(outerHit.x, 0.0);
+  float tEnd = outerHit.y;
+  if (tMaxHit > 0.0) {
+    tEnd = min(tEnd, tMaxHit);
+  }
+  if (tEnd <= tStart) return vec3(0.0);
+
+  // Geomagnetic axis slightly tilted relative to geographic pole
+  vec3 magAxis = normalize(vec3(-0.14, 0.984, 0.105));
+  vec3 magRight = normalize(cross(vec3(0.0, 0.0, 1.0), magAxis));
+  vec3 magFwd = cross(magAxis, magRight);
+
+  int steps = (uHighQuality == 1) ? 24 : 12;
+  float dt = (tEnd - tStart) / float(steps);
+  vec3 accum = vec3(0.0);
+
+  for (int i = 0; i < 24; i++) {
+    if (i >= steps) break;
+    float t = tStart + (float(i) + jitter) * dt;
+    vec3 p = ro + rd * t;
+    float r = length(p);
+    if (r < rInner || r > rOuter) continue;
+
+    vec3 n = p / r;
+    vec3 nr = rotateY(n, uEarthRot);
+
+    // Geomagnetic latitude (oval around ~68-74 deg north & south)
+    float sinLat = dot(nr, magAxis);
+    float absLat = asin(clamp(abs(sinLat), 0.0, 1.0)); // radians
+    float targetLat = 1.21; // ~69.3 deg
+    float ovalDist = abs(absLat - targetLat);
+    float ovalMask = exp(-(ovalDist * ovalDist) / (0.075 * 0.075));
+    if (ovalMask < 0.01) continue;
+
+    // Aurora only visible in night & twilight
+    float nightMask = smoothstep(0.08, -0.18, dot(n, sunDir));
+    if (nightMask < 0.005) continue;
+
+    // Flowing magnetic curtain ribbons (projected onto pole plane for vertical streaks)
+    float lon = atan(dot(nr, magRight), dot(nr, magFwd));
+    vec3 sheetCoord = vec3(cos(lon) * 3.8, sin(lon) * 3.8, absLat * 14.0);
+    float warp = fbm3D(sheetCoord * 1.15 + vec3(uTime * 0.07, -uTime * 0.05, 0.0));
+    float ribbon = sin(absLat * 46.0 + warp * 9.5 + uTime * 0.35);
+    ribbon = smoothstep(0.15, 0.96, ribbon * 0.5 + 0.5);
+
+    // Fine vertical ray structure along magnetic field lines
+    float rays = valueNoise3D(vec3(cos(lon) * 28.0 + warp * 4.0, sin(lon) * 28.0, uTime * 0.25));
+    rays = smoothstep(0.28, 0.88, rays);
+
+    // Vertical altitude profile (sharp glowing bottom, fading wispy top)
+    float hNorm = clamp((r - rInner) / (rOuter - rInner), 0.0, 1.0);
+    float vertProfile = smoothstep(0.0, 0.16, hNorm) * pow(1.0 - hNorm, 1.65);
+
+    // Spectral emission: pink-magenta base -> bright oxygen green -> violet/crimson top
+    vec3 colBottom = vec3(0.85, 0.22, 0.65);
+    vec3 colGreen  = vec3(0.08, 1.00, 0.48);
+    vec3 colTop    = vec3(0.52, 0.14, 0.92);
+    vec3 emission = mix(colBottom, colGreen, smoothstep(0.02, 0.18, hNorm));
+    emission = mix(emission, colTop, smoothstep(0.32, 0.85, hNorm));
+
+    float density = ovalMask * ribbon * mix(0.45, 1.25, rays) * vertProfile * nightMask;
+    accum += emission * density * dt * 15.0;
+  }
+
+  return accum * uAuroraIntensity;
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +368,6 @@ AtmoParams getAtmoParams() {
   a.hRayleigh = 0.00165 * hScale;
   a.hMie = 0.00036 * hScale;
 
-  // Calibrated to realistic space-photography optical depth (clear nadir, rich cobalt limb)
   float k = uAtmoDensity / hScale;
   a.betaR = vec3(13.5, 34.5, 94.0) * k;
   a.betaM = vec3(7.5) * k;
@@ -238,7 +379,6 @@ vec3 sampleAtmoDensity(float alt, AtmoParams a) {
   float altClamped = max(alt, 0.0);
   float dR = exp(-altClamped / a.hRayleigh);
   float dM = exp(-altClamped / a.hMie);
-  // Ozone layer centered around ~25 km equivalent altitude
   float ozCenter = 0.0046 * max(uAtmoHeight, 0.25);
   float ozWidth = 0.0028 * max(uAtmoHeight, 0.25);
   float dOz = max(0.0, 1.0 - abs(altClamped - ozCenter) / ozWidth);
@@ -246,7 +386,6 @@ vec3 sampleAtmoDensity(float alt, AtmoParams a) {
 }
 
 vec3 computeOpticalDepthToSun(vec3 pos, vec3 sunDir, AtmoParams a, int lightSteps) {
-  // Check planet shadow
   vec2 earthHit = intersectSphere(pos, sunDir, R_EARTH * 0.9992);
   if (earthHit.x > 0.0) {
     return vec3(1e5);
@@ -293,7 +432,6 @@ void integrateAtmosphere(
   float dt = (tEnd - tStart) / float(viewSteps);
   float cosTheta = dot(rd, sunDir);
 
-  // Rayleigh & Henyey-Greenstein Mie phase functions
   float phaseR = 3.0 / (16.0 * PI) * (1.0 + cosTheta * cosTheta);
   float g = 0.78;
   float g2 = g * g;
@@ -348,7 +486,6 @@ float geometrySchlickGGX(float NdotV, float rough) {
 // Main Raytrace Entry
 // ---------------------------------------------------------------------------
 void main() {
-  // Low-discrepancy subpixel anti-aliasing in offline raytrace mode
   vec2 subpixel = vec2(0.0);
   float hashSeed = hash12(gl_FragCoord.xy + float(uSampleIndex) * 13.71);
   if (uHighQuality == 1) {
@@ -366,12 +503,11 @@ void main() {
   );
   vec3 ro = uCamPos;
 
-  // Soft angular sun disk sampling during progressive raytracing
   vec3 sunDir = normalize(uSunDir);
   if (uHighQuality == 1) {
     vec2 sRnd = r2Sequence(uSampleIndex + 137);
     float angle = sRnd.x * TWO_PI;
-    float radius = sqrt(sRnd.y) * 0.011; // ~0.63 deg solar disk penumbra
+    float radius = sqrt(sRnd.y) * 0.011;
     vec3 sUp = abs(sunDir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 sRight = normalize(cross(sUp, sunDir));
     vec3 sOrthoUp = cross(sunDir, sRight);
@@ -384,11 +520,17 @@ void main() {
   vec2 atmoHit = intersectSphere(ro, rd, atmo.rAtmo);
   vec2 earthHit = intersectSphere(ro, rd, R_EARTH);
   vec2 cloudHit = intersectSphere(ro, rd, rCloud);
+  vec2 moonHit = (uMoonEnabled == 1)
+    ? intersectSphereAt(ro, rd, uMoonPos, uMoonRadius)
+    : vec2(-1.0);
+
+  bool hitEarth = earthHit.x > 0.0;
+  bool hitMoon = moonHit.x > 0.0 && (!hitEarth || moonHit.x < earthHit.x);
 
   float jitter = (uHighQuality == 1) ? hashSeed : 0.5;
   vec3 radiance = vec3(0.0);
 
-  if (earthHit.x > 0.0) {
+  if (hitEarth && !hitMoon) {
     // -----------------------------------------------------------------------
     // Ray hits Earth Surface
     // -----------------------------------------------------------------------
@@ -406,10 +548,9 @@ void main() {
     float oceanMask = smoothstep(0.50, 0.24, roughness);
     float landMask = 1.0 - oceanMask;
 
-    // Tangent frame on sphere for 4K relief normal perturbation
     vec3 upRef = abs(N.y) < 0.995 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 T = normalize(cross(upRef, N)); // East
-    vec3 B = cross(N, T);                // North
+    vec3 T = normalize(cross(upRef, N));
+    vec3 B = cross(N, T);
 
     vec3 Nsurf = N;
     if (uBumpStrength > 0.001) {
@@ -423,7 +564,6 @@ void main() {
       Nsurf = normalize(N - ((hR - hL) * T + (hU - hD) * B) * reliefScale);
     }
 
-    // Subtle ocean micro-waves for realistic sparkling sun glint
     if (oceanMask > 0.01) {
       vec3 wavePos = rotateY(N, uEarthRot) * 180.0;
       float w1 = valueNoise3D(wavePos) - 0.5;
@@ -432,12 +572,10 @@ void main() {
       Nsurf = normalize(mix(Nsurf, Nocean, oceanMask));
     }
 
-    // Atmospheric transmittance of sunlight reaching this surface point
     int surfLightSteps = (uHighQuality == 1) ? 14 : 6;
     vec3 sunOD = computeOpticalDepthToSun(hitPos + N * 0.0003, sunDir, atmo, surfLightSteps);
     vec3 sunTrans = (sunOD.x < 1e4) ? transmittanceFromOD(sunOD, atmo) : vec3(0.0);
 
-    // Raytraced cloud shadow onto the Earth surface
     float cloudShadowFactor = 1.0;
     if (uCloudCover > 0.01 && uCloudShadow > 0.01 && dot(N, sunDir) > -0.05) {
       vec2 shHit = intersectSphere(hitPos, sunDir, rCloud);
@@ -448,26 +586,19 @@ void main() {
       }
     }
 
-    // Direct solar irradiance at surface
     float NdotL = max(dot(Nsurf, sunDir), 0.0);
     float macroNdotL = dot(N, sunDir);
-    // Soft twilight grazing falloff
     float horizonVis = smoothstep(-0.04, 0.06, macroNdotL);
     vec3 directLight = vec3(3.85) * sunTrans * cloudShadowFactor * horizonVis;
 
-    // Enhance landmass saturation & deep marine ocean color for crisp satellite look
     float lum = dot(dayAlbedo, vec3(0.2126, 0.7152, 0.0722));
     vec3 vividAlbedo = mix(vec3(lum), dayAlbedo, mix(1.12, 1.28, landMask));
     vividAlbedo = mix(vividAlbedo, vividAlbedo * vec3(0.68, 0.80, 1.04), oceanMask * 0.65);
 
-    // Diffuse surface reflection
     vec3 diffuse = (vividAlbedo / PI) * NdotL * directLight;
-
-    // Subtle atmospheric sky-dome bounce ambient on sunlit hemisphere
     vec3 skyAmbient = vec3(0.014, 0.032, 0.075) * uAtmoDensity * smoothstep(-0.14, 0.35, macroNdotL);
     vec3 surfColor = diffuse + vividAlbedo * skyAmbient * (0.35 + 0.65 * cloudShadowFactor);
 
-    // Physically-based GGX Ocean Sun Glint
     if (oceanMask > 0.01 && uOceanSpec > 0.001 && NdotL > 0.0) {
       vec3 H = normalize(V + sunDir);
       float NdotV = max(dot(Nsurf, V), 0.001);
@@ -483,18 +614,14 @@ void main() {
       surfColor += spec * NdotL * directLight * oceanMask * uOceanSpec * 1.15;
     }
 
-    // Night-side city lights
     if (uNightLights > 0.001) {
       float nightMask = smoothstep(0.09, -0.14, macroNdotL);
       vec3 lights = pow(max(nightSRGB, 0.0), vec3(2.0));
-      // Warm sodium/LED city glow
       lights *= vec3(1.18, 0.96, 0.68);
       surfColor += lights * nightMask * uNightLights * 0.95;
     }
 
-    // -----------------------------------------------------------------------
-    // Elevated 3D Cloud Layer over Surface
-    // -----------------------------------------------------------------------
+    // Elevated 3D Cloud Layer
     if (uCloudCover > 0.01 && cloudHit.x > 0.0 && cloudHit.x < earthHit.x) {
       vec3 cPos = ro + rd * cloudHit.x;
       vec3 cN = normalize(cPos);
@@ -504,13 +631,11 @@ void main() {
         vec3 cSunOD = computeOpticalDepthToSun(cPos, sunDir, atmo, surfLightSteps);
         vec3 cSunTrans = (cSunOD.x < 1e4) ? transmittanceFromOD(cSunOD, atmo) : vec3(0.0);
 
-        // Cloud self-shadowing: sample cloud slightly toward sun
         vec3 cShift = normalize(cN + sunDir * 0.0055);
         float cSelf = sampleCloudDensity(cShift);
         float selfShadow = mix(1.0, 0.58, clamp((cSelf - cDens) * 2.2 + 0.25, 0.0, 1.0));
 
         float cNdotL = dot(cN, sunDir);
-        // Wrapped diffuse for multiple scattering inside clouds
         float wrapLight = smoothstep(-0.14, 0.85, cNdotL);
         float cosSun = dot(rd, sunDir);
         float silverLining = pow(max(cosSun, 0.0), 8.0) * 0.45 * (1.0 - cDens * 0.6);
@@ -519,46 +644,46 @@ void main() {
         vec3 cloudAmbient = vec3(0.018, 0.036, 0.08) * uAtmoDensity * smoothstep(-0.18, 0.28, cNdotL);
         vec3 cloudCol = cloudDirect + cloudAmbient;
 
-        // Subtle warm glow of city lights diffusing through thin clouds on the night side
         if (uNightLights > 0.001) {
           float cNight = smoothstep(0.06, -0.15, cNdotL);
           vec3 underLights = pow(max(nightSRGB, 0.0), vec3(2.0)) * vec3(1.1, 0.85, 0.55);
           cloudCol += underLights * cNight * uNightLights * 0.22 * (1.0 - cDens * 0.55);
         }
 
-        // Alpha composite cloud over surface
         float alpha = smoothstep(0.04, 0.88, cDens);
         surfColor = mix(surfColor, cloudCol, alpha);
       }
     }
 
-    // -----------------------------------------------------------------------
-    // Atmospheric In-Scattering & Aerial Perspective from Camera to Surface
-    // -----------------------------------------------------------------------
     float tAtmoStart = max(atmoHit.x, 0.0);
     float tAtmoEnd = earthHit.x;
     vec3 inscatter, atmoTrans;
     integrateAtmosphere(ro, rd, tAtmoStart, tAtmoEnd, sunDir, atmo, jitter, inscatter, atmoTrans);
 
-    radiance = surfColor * atmoTrans + inscatter;
+    vec3 aurora = integrateAurora(ro, rd, earthHit.x, sunDir, jitter);
+    radiance = surfColor * atmoTrans + inscatter + aurora;
   } else {
     // -----------------------------------------------------------------------
-    // Ray misses Earth -> Deep Space + Atmospheric Limb Glow
+    // Background: Moon or Deep Space + Earth's Atmospheric Limb & Polar Aurora
     // -----------------------------------------------------------------------
-    vec3 spaceCol = renderSpace(rd, sunDir);
+    vec3 bgCol = hitMoon
+      ? shadeMoon(ro + rd * moonHit.x, rd, sunDir)
+      : renderSpace(rd, sunDir);
 
-    if (atmoHit.y > 0.0) {
+    float tMaxObj = hitMoon ? moonHit.x : -1.0;
+
+    if (atmoHit.y > 0.0 && (!hitMoon || atmoHit.x < moonHit.x)) {
       float tAtmoStart = max(atmoHit.x, 0.0);
-      float tAtmoEnd = atmoHit.y;
+      float tAtmoEnd = hitMoon ? min(atmoHit.y, moonHit.x) : atmoHit.y;
       vec3 inscatter, atmoTrans;
       integrateAtmosphere(ro, rd, tAtmoStart, tAtmoEnd, sunDir, atmo, jitter, inscatter, atmoTrans);
-      radiance = spaceCol * atmoTrans + inscatter;
-    } else {
-      radiance = spaceCol;
+      bgCol = bgCol * atmoTrans + inscatter;
     }
+
+    vec3 aurora = integrateAurora(ro, rd, tMaxObj, sunDir, jitter);
+    radiance = bgCol + aurora;
   }
 
-  // Clamp NaNs/Infs just in case
   radiance = max(radiance, vec3(0.0));
   outColor = vec4(radiance, 1.0);
 }
@@ -574,7 +699,6 @@ uniform sampler2D uAccumTex;
 uniform vec2 uResolution;
 uniform float uExposure;
 
-// ACES Filmic Tone Mapping (Narkowicz fit)
 vec3 acesToneMap(vec3 x) {
   const float a = 2.51;
   const float b = 0.03;
@@ -587,7 +711,6 @@ vec3 acesToneMap(vec3 x) {
 void main() {
   vec3 col = texture(uAccumTex, vUv).rgb;
 
-  // Subtle optical bloom for bright limb glow, sun glint & solar corona
   vec2 texel = 1.0 / uResolution;
   vec3 bloom = vec3(0.0);
   float totalW = 0.0;
@@ -605,16 +728,13 @@ void main() {
   }
   col += (bloom / max(totalW, 1.0)) * 0.28;
 
-  // Exposure & ACES Filmic Tone Mapping
   col *= uExposure;
   col = acesToneMap(col);
 
-  // Subtle cinematic vignette
   vec2 vigUv = vUv * 2.0 - 1.0;
   float vig = 1.0 - 0.12 * dot(vigUv, vigUv);
   col *= clamp(vig, 0.82, 1.0);
 
-  // Gamma encode to sRGB
   col = pow(max(col, 0.0), vec3(1.0 / 2.2));
   outColor = vec4(col, 1.0);
 }

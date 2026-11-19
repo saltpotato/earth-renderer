@@ -1,19 +1,20 @@
 import { fullscreenVert, earthRaytraceFrag, displayFrag } from './shaders.js';
 
-const TEXTURE_SOURCES = {
+const CDN_TEXTURES = {
   day: [
     'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r175/examples/textures/planets/earth_day_4096.jpg',
-    './textures/earth_day_4096.jpg',
     'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/earth_atmos_2048.jpg',
   ],
   night: [
     'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r175/examples/textures/planets/earth_night_4096.jpg',
-    './textures/earth_night_4096.jpg',
     'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/earth_lights_2048.jpg',
   ],
   brc: [
     'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r175/examples/textures/planets/earth_bump_roughness_clouds_4096.jpg',
-    './textures/earth_bump_roughness_clouds_4096.jpg',
+  ],
+  moon: [
+    'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r175/examples/textures/planets/moon_1024.jpg',
+    'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/moon_1024.jpg',
   ],
 };
 
@@ -85,15 +86,45 @@ function createProceduralFallbackCanvas(type) {
       );
       ctx.fill();
     }
+  } else if (type === 'moon') {
+    ctx.fillStyle = '#7e7d78';
+    ctx.fillRect(0, 0, c.width, c.height);
+    for (let i = 0; i < 120; i++) {
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(60,60,60,0.35)' : 'rgba(190,190,185,0.25)';
+      ctx.beginPath();
+      ctx.arc(
+        (Math.sin(i * 19.1) * 0.5 + 0.5) * c.width,
+        (Math.cos(i * 11.7) * 0.48 + 0.5) * c.height,
+        3 + (i % 9) * 3,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+    }
   } else if (type === 'night') {
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, c.width, c.height);
   } else {
-    // BRC: R=bump(0.5), G=roughness(0.25), B=clouds(0.0)
     ctx.fillStyle = 'rgb(128, 64, 0)';
     ctx.fillRect(0, 0, c.width, c.height);
   }
   return c;
+}
+
+function pickBestVideoMimeType() {
+  const candidates = [
+    'video/mp4;codecs=avc1.42E01E',
+    'video/mp4',
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+  for (const m of candidates) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) {
+      return m;
+    }
+  }
+  return '';
 }
 
 export class EarthRaytracer {
@@ -112,7 +143,6 @@ export class EarthRaytracer {
     }
     this.gl = gl;
 
-    // Float framebuffer support
     this.extFloat = gl.getExtension('EXT_color_buffer_float');
     this.extHalfFloat = gl.getExtension('EXT_color_buffer_half_float');
     this.extFloatLinear = gl.getExtension('OES_texture_float_linear');
@@ -122,33 +152,34 @@ export class EarthRaytracer {
     this.displayProgram = createProgram(gl, fullscreenVert, displayFrag);
     this.vao = gl.createVertexArray();
 
-    // Cache uniform locations
     this.uRay = this._getUniforms(this.rayProgram, [
       'uResolution', 'uCamPos', 'uCamForward', 'uCamRight', 'uCamUp', 'uTanHalfFov',
-      'uSunDir', 'uEarthRot', 'uCloudOffset',
+      'uSunDir', 'uEarthRot', 'uCloudOffset', 'uTime',
       'uAtmoDensity', 'uAtmoHeight', 'uCloudCover', 'uCloudShadow',
-      'uBumpStrength', 'uOceanSpec', 'uNightLights', 'uStarsIntensity',
+      'uBumpStrength', 'uOceanSpec', 'uNightLights', 'uStarsIntensity', 'uAuroraIntensity',
+      'uMoonEnabled', 'uMoonPos', 'uMoonRadius',
       'uSampleIndex', 'uHighQuality', 'uHasCustomClouds',
-      'uDayTex', 'uNightTex', 'uBrcTex', 'uCloudTex',
+      'uDayTex', 'uNightTex', 'uBrcTex', 'uCloudTex', 'uMoonTex',
     ]);
     this.uDisp = this._getUniforms(this.displayProgram, [
       'uAccumTex', 'uResolution', 'uExposure',
     ]);
 
-    // Textures
     this.textures = {
       day: this._createEmptyTexture([12, 32, 68, 255]),
       night: this._createEmptyTexture([0, 0, 0, 255]),
       brc: this._createEmptyTexture([128, 50, 0, 255]),
       clouds: this._createEmptyTexture([0, 0, 0, 255]),
+      moon: this._createEmptyTexture([130, 128, 122, 255]),
     };
     this.hasCustomClouds = false;
+    this.textureTier = '4K CDN';
 
     // Scene state
     this.state = {
-      camYaw: 0.28,       // radians (Europe/Africa facing)
-      camPitch: 0.44,     // radians (Northern hemisphere view)
-      camDist: 3.45,      // Earth radii (1.0 = surface, 3.45 ≈ 15,600 km alt)
+      camYaw: 0.28,
+      camPitch: 0.44,
+      camDist: 3.45,
       camTargetOffset: [0, 0, 0],
       fovDeg: 38,
 
@@ -156,6 +187,7 @@ export class EarthRaytracer {
       sunElDeg: 14,
       earthRot: 0,
       cloudOffsetDeg: 0,
+      time: 0,
 
       atmoDensity: 1.00,
       atmoHeight: 1.05,
@@ -165,23 +197,35 @@ export class EarthRaytracer {
       oceanSpec: 1.15,
       nightLights: 1.65,
       starsIntensity: 1.10,
+      auroraIntensity: 0.90,
       exposure: 1.05,
       autoRotate: false,
+
+      moonEnabled: true,
+      moonAngleDeg: -124,
+      moonDist: 6.2,
     };
 
-    // Accumulation FBO (shared for preview & offline render)
+    // Accumulation FBO
     this.accumFbo = null;
     this.accumTex = null;
     this.accumWidth = 0;
     this.accumHeight = 0;
 
-    // Render mode state
-    this.mode = 'live'; // 'live' | 'rendering' | 'done'
+    // Still render state
+    this.mode = 'live'; // 'live' | 'rendering' | 'done' | 'video' | 'video-done'
     this.renderTargetSpp = 48;
     this.renderCurrentSpp = 0;
     this.renderStartTime = 0;
     this.onRenderProgress = null;
     this.onRenderComplete = null;
+
+    // Video render state
+    this.videoJob = null;
+    this.lastVideoBlobUrl = null;
+    this.lastVideoExt = 'webm';
+    this.onVideoProgress = null;
+    this.onVideoComplete = null;
 
     this.resize();
   }
@@ -218,11 +262,36 @@ export class EarthRaytracer {
   }
 
   async loadDefaultTextures(onStatus) {
+    let manifest = null;
+    try {
+      const resp = await fetch('./textures/local_manifest.json', { cache: 'no-store' });
+      if (resp.ok) {
+        manifest = await resp.json();
+      }
+    } catch {
+      manifest = null;
+    }
+
+    const use8k = Boolean(manifest && manifest.useLocal8k);
+    this.textureTier = use8k ? '8K LOKAL' : '4K CDN';
+
+    const sources = {
+      day: use8k && manifest.day ? [manifest.day, ...CDN_TEXTURES.day] : CDN_TEXTURES.day,
+      night: use8k && manifest.night ? [manifest.night, ...CDN_TEXTURES.night] : CDN_TEXTURES.night,
+      brc: CDN_TEXTURES.brc,
+      moon: use8k && manifest.moon ? [manifest.moon, ...CDN_TEXTURES.moon] : CDN_TEXTURES.moon,
+    };
+
     const entries = [
-      ['day', TEXTURE_SOURCES.day, 'Lade 4K Tag-Satellitenkarte…'],
-      ['night', TEXTURE_SOURCES.night, 'Lade 4K Nachtlichter…'],
-      ['brc', TEXTURE_SOURCES.brc, 'Lade 4K Relief-, Ozean- & Wolkenkarte…'],
+      ['day', sources.day, use8k ? 'Lade lokale 8K Tag-Map…' : 'Lade 4K Tag-Satellitenkarte…'],
+      ['night', sources.night, use8k ? 'Lade lokale 8K Nachtlichter…' : 'Lade 4K Nachtlichter…'],
+      ['brc', sources.brc, 'Lade 4K Relief- & Ozeankarte…'],
+      ['moon', sources.moon, use8k ? 'Lade lokale 8K Mond-Map…' : 'Lade Mond-Textur…'],
     ];
+
+    if (use8k && manifest.clouds) {
+      entries.push(['clouds', [manifest.clouds], 'Lade lokale 8K Wolkenkarte…']);
+    }
 
     await Promise.all(
       entries.map(async ([key, urls, msg]) => {
@@ -230,12 +299,19 @@ export class EarthRaytracer {
           if (onStatus) onStatus(msg);
           const { img } = await loadImageWithFallback(urls);
           this._uploadTexture(this.textures[key], img);
+          if (key === 'clouds') {
+            this.hasCustomClouds = true;
+          }
         } catch (err) {
           console.warn(`Fallback procedural texture used for ${key}:`, err);
-          this._uploadTexture(this.textures[key], createProceduralFallbackCanvas(key));
+          if (key !== 'clouds') {
+            this._uploadTexture(this.textures[key], createProceduralFallbackCanvas(key));
+          }
         }
       })
     );
+
+    return this.textureTier;
   }
 
   loadCustomTexture(slot, file) {
@@ -250,7 +326,7 @@ export class EarthRaytracer {
           this._uploadTexture(this.textures[slot], img);
         }
         URL.revokeObjectURL(url);
-        resolve();
+        resolve({ width: img.naturalWidth, height: img.naturalHeight });
       };
       img.onerror = (e) => {
         URL.revokeObjectURL(url);
@@ -350,14 +426,12 @@ export class EarthRaytracer {
     fx /= fl; fy /= fl; fz /= fl;
 
     const upRef = [0, 1, 0];
-    // right = normalize(cross(forward, upRef))
     let rx = fy * upRef[2] - fz * upRef[1];
     let ry = fz * upRef[0] - fx * upRef[2];
     let rz = fx * upRef[1] - fy * upRef[0];
     const rl = Math.hypot(rx, ry, rz) || 1;
     rx /= rl; ry /= rl; rz /= rl;
 
-    // up = cross(right, forward)
     const ux = ry * fz - rz * fy;
     const uy = rz * fx - rx * fz;
     const uz = rx * fy - ry * fx;
@@ -377,10 +451,21 @@ export class EarthRaytracer {
     return [ce * Math.sin(az), Math.sin(el), ce * Math.cos(az)];
   }
 
+  _computeMoonPos() {
+    const ang = (this.state.moonAngleDeg * Math.PI) / 180;
+    const d = this.state.moonDist;
+    return [
+      d * Math.sin(ang),
+      d * Math.cos(ang * 0.5) * 0.18 + 0.65,
+      d * Math.cos(ang),
+    ];
+  }
+
   _bindRayUniforms(width, height, sampleIndex, highQuality) {
     const gl = this.gl;
     const cam = this._computeCameraBasis();
     const sun = this._computeSunDir();
+    const moonPos = this._computeMoonPos();
     const tanHalfFov = Math.tan(((this.state.fovDeg * Math.PI) / 180) * 0.5);
 
     gl.useProgram(this.rayProgram);
@@ -394,6 +479,7 @@ export class EarthRaytracer {
     gl.uniform3fv(this.uRay.uSunDir, sun);
     gl.uniform1f(this.uRay.uEarthRot, this.state.earthRot);
     gl.uniform1f(this.uRay.uCloudOffset, (this.state.cloudOffsetDeg * Math.PI) / 180);
+    gl.uniform1f(this.uRay.uTime, this.state.time);
 
     gl.uniform1f(this.uRay.uAtmoDensity, this.state.atmoDensity);
     gl.uniform1f(this.uRay.uAtmoHeight, this.state.atmoHeight);
@@ -403,6 +489,11 @@ export class EarthRaytracer {
     gl.uniform1f(this.uRay.uOceanSpec, this.state.oceanSpec);
     gl.uniform1f(this.uRay.uNightLights, this.state.nightLights);
     gl.uniform1f(this.uRay.uStarsIntensity, this.state.starsIntensity);
+    gl.uniform1f(this.uRay.uAuroraIntensity, this.state.auroraIntensity);
+
+    gl.uniform1i(this.uRay.uMoonEnabled, this.state.moonEnabled ? 1 : 0);
+    gl.uniform3fv(this.uRay.uMoonPos, moonPos);
+    gl.uniform1f(this.uRay.uMoonRadius, 0.2725);
 
     gl.uniform1i(this.uRay.uSampleIndex, sampleIndex);
     gl.uniform1i(this.uRay.uHighQuality, highQuality ? 1 : 0);
@@ -423,6 +514,10 @@ export class EarthRaytracer {
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.textures.clouds);
     gl.uniform1i(this.uRay.uCloudTex, 3);
+
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.textures.moon);
+    gl.uniform1i(this.uRay.uMoonTex, 4);
   }
 
   _drawDisplayToTarget(targetFbo, targetW, targetH, preserveAspect) {
@@ -464,44 +559,83 @@ export class EarthRaytracer {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  // Called every animation frame
-  tick(dt) {
+  _renderSampleToAccum(sampleIndex, highQuality) {
     const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.accumFbo);
+    gl.viewport(0, 0, this.accumWidth, this.accumHeight);
+
+    if (sampleIndex === 0) {
+      gl.disable(gl.BLEND);
+    } else {
+      const alpha = 1.0 / (sampleIndex + 1);
+      gl.enable(gl.BLEND);
+      gl.blendColor(0, 0, 0, alpha);
+      gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE_MINUS_CONSTANT_ALPHA);
+    }
+
+    this._bindRayUniforms(this.accumWidth, this.accumHeight, sampleIndex, highQuality);
+    gl.bindVertexArray(this.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.BLEND);
+  }
+
+  _readTonemappedTo2DCanvas(outCanvas, outCtx, scratchFbo, scratchPixels, imgData) {
+    const gl = this.gl;
+    const w = outCanvas.width;
+    const h = outCanvas.height;
+
+    this._drawDisplayToTarget(scratchFbo, w, h, false);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, scratchPixels);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    const rowSize = w * 4;
+    for (let y = 0; y < h; y++) {
+      const srcOffset = (h - 1 - y) * rowSize;
+      const dstOffset = y * rowSize;
+      imgData.data.set(scratchPixels.subarray(srcOffset, srcOffset + rowSize), dstOffset);
+    }
+    outCtx.putImageData(imgData, 0, 0);
+  }
+
+  _applyVideoKeyframe(job, progress) {
+    const base = job.baseState;
+    const smooth = progress * progress * (3 - 2 * progress);
+    this.state.time = base.time + progress * job.durationSec;
+
+    if (job.animType === 'sunrise') {
+      this.state.sunAzDeg = base.sunAzDeg - 55 + progress * 110;
+      this.state.sunElDeg = base.sunElDeg - 6 + Math.sin(progress * Math.PI) * 14;
+      this.state.cloudOffsetDeg = base.cloudOffsetDeg + progress * 6;
+    } else if (job.animType === 'orbit') {
+      this.state.camYaw = base.camYaw + progress * 0.95;
+      this.state.camPitch = base.camPitch + Math.sin(progress * Math.PI) * 0.16;
+      this.state.cloudOffsetDeg = base.cloudOffsetDeg + progress * 8;
+    } else if (job.animType === 'iss-flyover') {
+      this.state.camDist = 1.24;
+      this.state.fovDeg = 52;
+      this.state.camYaw = base.camYaw - 0.35 + smooth * 0.85;
+      this.state.camPitch = 0.58 + Math.sin(progress * Math.PI) * 0.18;
+      this.state.camTargetOffset = [0.28, 0.20, -0.12];
+      this.state.cloudOffsetDeg = base.cloudOffsetDeg + progress * 5;
+    } else if (job.animType === 'rotation-moon') {
+      this.state.earthRot = base.earthRot + progress * 0.65;
+      this.state.cloudOffsetDeg = base.cloudOffsetDeg + progress * 10;
+      this.state.moonAngleDeg = base.moonAngleDeg + progress * 24;
+    }
+  }
+
+  tick(dt) {
     if (this.mode === 'live') {
+      this.state.time += dt;
       if (this.state.autoRotate) {
         this.state.earthRot += dt * 0.04;
       }
       this._ensureAccumFbo(this.canvas.width, this.canvas.height);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.accumFbo);
-      gl.viewport(0, 0, this.accumWidth, this.accumHeight);
-      gl.disable(gl.BLEND);
-
-      this._bindRayUniforms(this.accumWidth, this.accumHeight, 0, false);
-      gl.bindVertexArray(this.vao);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-
+      this._renderSampleToAccum(0, false);
       this._drawDisplayToTarget(null, this.canvas.width, this.canvas.height, false);
     } else if (this.mode === 'rendering') {
-      // Progressive offline raytracing: accumulate 1 sample per frame (smooth UI)
       const s = this.renderCurrentSpp;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.accumFbo);
-      gl.viewport(0, 0, this.accumWidth, this.accumHeight);
-
-      if (s === 0) {
-        gl.disable(gl.BLEND);
-      } else {
-        // Running average: out = new * (1/(s+1)) + prev * (s/(s+1))
-        const alpha = 1.0 / (s + 1);
-        gl.enable(gl.BLEND);
-        gl.blendColor(0, 0, 0, alpha);
-        gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE_MINUS_CONSTANT_ALPHA);
-      }
-
-      this._bindRayUniforms(this.accumWidth, this.accumHeight, s, true);
-      gl.bindVertexArray(this.vao);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      gl.disable(gl.BLEND);
-
+      this._renderSampleToAccum(s, true);
       this.renderCurrentSpp++;
       this._drawDisplayToTarget(null, this.canvas.width, this.canvas.height, true);
 
@@ -516,9 +650,10 @@ export class EarthRaytracer {
           this.onRenderComplete(this.accumWidth, this.accumHeight, this.renderTargetSpp, elapsed);
         }
       }
-    } else if (this.mode === 'done') {
-      // Allow live exposure tweaks on the finished HDR raytrace buffer!
+    } else if (this.mode === 'done' || this.mode === 'video-done') {
       this._drawDisplayToTarget(null, this.canvas.width, this.canvas.height, true);
+    } else if (this.mode === 'video' && this.videoJob) {
+      this._tickVideoRender();
     }
   }
 
@@ -530,7 +665,179 @@ export class EarthRaytracer {
     this.renderStartTime = performance.now();
   }
 
+  startVideoRender({ width, height, fps, durationSec, sppPerFrame, animType }) {
+    const mimeType = pickBestVideoMimeType();
+    if (!mimeType) {
+      throw new Error('MediaRecorder wird von diesem Browser nicht unterstützt.');
+    }
+
+    this._ensureAccumFbo(width, height);
+    const totalFrames = Math.max(2, Math.round(fps * durationSec));
+
+    const gl = this.gl;
+    const outTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, outTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+    const outFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, outFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, outTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = width;
+    outCanvas.height = height;
+    const outCtx = outCanvas.getContext('2d');
+    const imgData = outCtx.createImageData(width, height);
+    const scratchPixels = new Uint8Array(width * height * 4);
+
+    const stream = outCanvas.captureStream(0);
+    const videoTrack = stream.getVideoTracks()[0];
+    const bps = width >= 3840 ? 28_000_000 : width >= 2560 ? 18_000_000 : 12_000_000;
+    const recorder = new MediaRecorder(stream, {
+      mimeType,
+      videoBitsPerSecond: bps,
+    });
+    const chunks = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    const baseState = {
+      ...this.state,
+      camTargetOffset: [...this.state.camTargetOffset],
+    };
+
+    this.videoJob = {
+      width,
+      height,
+      fps,
+      durationSec,
+      sppPerFrame,
+      animType,
+      totalFrames,
+      currentFrame: 0,
+      currentSpp: 0,
+      startTime: performance.now(),
+      mimeType,
+      outTex,
+      outFbo,
+      outCanvas,
+      outCtx,
+      imgData,
+      scratchPixels,
+      stream,
+      videoTrack,
+      recorder,
+      chunks,
+      baseState,
+    };
+
+    recorder.start();
+    this.mode = 'video';
+    this._applyVideoKeyframe(this.videoJob, 0);
+  }
+
+  _tickVideoRender() {
+    const job = this.videoJob;
+    if (!job) return;
+
+    // Accumulate samples for the current video frame (up to 2 samples per animation frame)
+    const batch = job.width >= 2560 ? 1 : 2;
+    for (let b = 0; b < batch && job.currentSpp < job.sppPerFrame; b++) {
+      this._renderSampleToAccum(job.currentSpp, true);
+      job.currentSpp++;
+    }
+
+    this._drawDisplayToTarget(null, this.canvas.width, this.canvas.height, true);
+
+    if (job.currentSpp >= job.sppPerFrame) {
+      // Frame complete: push into MediaRecorder stream
+      this._readTonemappedTo2DCanvas(
+        job.outCanvas,
+        job.outCtx,
+        job.outFbo,
+        job.scratchPixels,
+        job.imgData
+      );
+      if (job.videoTrack && typeof job.videoTrack.requestFrame === 'function') {
+        job.videoTrack.requestFrame();
+      }
+
+      job.currentFrame++;
+      job.currentSpp = 0;
+
+      const elapsed = (performance.now() - job.startTime) / 1000;
+      if (this.onVideoProgress) {
+        this.onVideoProgress(job.currentFrame, job.totalFrames, elapsed);
+      }
+
+      if (job.currentFrame >= job.totalFrames) {
+        this._finishVideoRender(false);
+        return;
+      }
+
+      const progress = job.currentFrame / (job.totalFrames - 1);
+      this._applyVideoKeyframe(job, progress);
+    }
+  }
+
+  _finishVideoRender(cancelled) {
+    const job = this.videoJob;
+    if (!job) return;
+
+    const gl = this.gl;
+    gl.deleteFramebuffer(job.outFbo);
+    gl.deleteTexture(job.outTex);
+
+    // Restore original scene state
+    Object.assign(this.state, {
+      ...job.baseState,
+      camTargetOffset: [...job.baseState.camTargetOffset],
+    });
+
+    const elapsed = (performance.now() - job.startTime) / 1000;
+    const ext = job.mimeType.includes('mp4') ? 'mp4' : 'webm';
+    const { width, height, totalFrames, fps } = job;
+
+    job.recorder.onstop = () => {
+      job.stream.getTracks().forEach((t) => t.stop());
+      if (!cancelled) {
+        if (this.lastVideoBlobUrl) URL.revokeObjectURL(this.lastVideoBlobUrl);
+        const blob = new Blob(job.chunks, { type: job.mimeType });
+        this.lastVideoBlobUrl = URL.createObjectURL(blob);
+        this.lastVideoExt = ext;
+        if (this.onVideoComplete) {
+          this.onVideoComplete({ width, height, totalFrames, fps, elapsed, ext });
+        }
+      }
+    };
+
+    if (job.recorder.state !== 'inactive') {
+      job.recorder.stop();
+    }
+    this.videoJob = null;
+    this.mode = cancelled ? 'live' : 'video-done';
+    if (cancelled) {
+      this.resize();
+    }
+  }
+
+  downloadLastVideo() {
+    if (!this.lastVideoBlobUrl) return;
+    const a = document.createElement('a');
+    a.href = this.lastVideoBlobUrl;
+    a.download = `terra-raytrace-sequence-${this.accumWidth}x${this.accumHeight}.${this.lastVideoExt}`;
+    a.click();
+  }
+
   returnToLive() {
+    if (this.mode === 'video' && this.videoJob) {
+      this._finishVideoRender(true);
+      return;
+    }
     this.mode = 'live';
     this.resize();
   }
@@ -540,7 +847,6 @@ export class EarthRaytracer {
     const w = this.accumWidth;
     const h = this.accumHeight;
 
-    // Render tonemapped image into an 8-bit FBO at exact full resolution
     const outTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, outTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -551,28 +857,17 @@ export class EarthRaytracer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, outFbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, outTex, 0);
 
-    this._drawDisplayToTarget(outFbo, w, h, false);
-
-    const pixels = new Uint8Array(w * h * 4);
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteFramebuffer(outFbo);
-    gl.deleteTexture(outTex);
-
-    // Flip Y onto a 2D canvas and export PNG
     const outCanvas = document.createElement('canvas');
     outCanvas.width = w;
     outCanvas.height = h;
-    const ctx = outCanvas.getContext('2d');
-    const imgData = ctx.createImageData(w, h);
-    const rowSize = w * 4;
-    for (let y = 0; y < h; y++) {
-      const srcOffset = (h - 1 - y) * rowSize;
-      const dstOffset = y * rowSize;
-      imgData.data.set(pixels.subarray(srcOffset, srcOffset + rowSize), dstOffset);
-    }
-    ctx.putImageData(imgData, 0, 0);
+    const outCtx = outCanvas.getContext('2d');
+    const imgData = outCtx.createImageData(w, h);
+    const pixels = new Uint8Array(w * h * 4);
+
+    this._readTonemappedTo2DCanvas(outCanvas, outCtx, outFbo, pixels, imgData);
+
+    gl.deleteFramebuffer(outFbo);
+    gl.deleteTexture(outTex);
 
     outCanvas.toBlob((blob) => {
       if (!blob) return;

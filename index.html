@@ -14,8 +14,8 @@
     <div id="loading-overlay" class="overlay">
       <div class="loader-card">
         <div class="spinner"></div>
-        <h2 id="loading-title">Lade 4K Satellitentexturen…</h2>
-        <p id="loading-sub">NASA Blue Marble · Night Lights · Elevation &amp; Clouds</p>
+        <h2 id="loading-title">Lade Satellitentexturen…</h2>
+        <p id="loading-sub">NASA Blue Marble · Night Lights · Relief · Clouds · Moon</p>
       </div>
     </div>
 
@@ -25,27 +25,29 @@
         <span class="brand-dot"></span>
         <div>
           <h1>TERRA RAYTRACER</h1>
-          <p class="subtitle">Rayleigh/Mie Atmosphäre · 4K Satelliten-Relief · Progressive Path/Raytracing</p>
+          <p class="subtitle">Rayleigh/Mie Atmosphäre · Aurora · Mond · 4K/8K Raytracing</p>
         </div>
       </div>
       <div class="telemetry" id="telemetry">
         <span id="stat-mode" class="badge badge-live">LIVE VORSCHAU</span>
+        <span id="stat-tex" class="badge badge-tex">4K CDN</span>
         <span id="stat-res" class="mono">1280×720</span>
-        <span id="stat-alt" class="mono">ALT 12.400 km</span>
+        <span id="stat-alt" class="mono">ALT 15.600 km</span>
       </div>
     </header>
 
-    <!-- Render Progress Banner (shown during offline raytrace) -->
+    <!-- Render Progress Banner (Still & Video) -->
     <div id="render-banner" class="render-banner hidden">
       <div class="render-banner-top">
         <div class="render-status-left">
           <span class="pulse-dot"></span>
           <strong id="render-status-text">Raytracing läuft…</strong>
-          <span id="render-spp-text" class="mono">0 / 64 SPP</span>
+          <span id="render-spp-text" class="mono">0 / 48 SPP</span>
           <span id="render-time-text" class="mono">0.0s</span>
         </div>
         <div class="render-actions">
           <button id="btn-download" class="btn btn-success hidden">PNG speichern</button>
+          <button id="btn-download-video" class="btn btn-success hidden">Video speichern</button>
           <button id="btn-back-live" class="btn btn-secondary hidden">Zurück zur Vorschau</button>
           <button id="btn-cancel-render" class="btn btn-danger">Abbrechen</button>
         </div>
@@ -63,9 +65,9 @@
       </div>
 
       <div class="panel-body">
-        <!-- Offline Raytrace Render Section -->
+        <!-- Offline Still Raytrace Render Section -->
         <section class="section highlight-section">
-          <h3>Raytrace Render</h3>
+          <h3>Raytrace Standbild</h3>
           <div class="row-2">
             <label class="field">
               <span>Auflösung</span>
@@ -89,9 +91,52 @@
           <button id="btn-render" class="btn btn-primary btn-full">
             ✦ Raytrace Rendern
           </button>
-          <p class="hint">
-            Berechnet 64-Step Rayleigh/Mie Atmosphäre, weiche Sonnenscheibe, Wolkenschatten &amp; Supersampling.
-          </p>
+        </section>
+
+        <!-- Video Sequence Section -->
+        <section class="section video-section">
+          <h3>Video-Sequenz (bis 4K)</h3>
+          <label class="field">
+            <span>Kamerafahrt / Animation</span>
+            <select id="video-anim">
+              <option value="sunrise" selected>Sonnenaufgang (Terminator)</option>
+              <option value="orbit">Orbit-Vorbeiflug</option>
+              <option value="iss-flyover">ISS-Horizontflug + Aurora</option>
+              <option value="rotation-moon">Erdrotation + Mond-Orbit</option>
+            </select>
+          </label>
+          <div class="row-2">
+            <label class="field">
+              <span>Auflösung</span>
+              <select id="video-res">
+                <option value="1280x720" selected>HD (1280×720)</option>
+                <option value="1920x1080">Full HD (1920×1080)</option>
+                <option value="2560x1440">QHD (2560×1440)</option>
+                <option value="3840x2160">4K UHD (3840×2160)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Dauer / FPS</span>
+              <select id="video-dur">
+                <option value="3x24">3s · 24 FPS (72 Fr.)</option>
+                <option value="4x30" selected>4s · 30 FPS (120 Fr.)</option>
+                <option value="6x30">6s · 30 FPS (180 Fr.)</option>
+                <option value="8x24">8s · 24 FPS (192 Fr.)</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">
+            <span>Raytrace-Qualität pro Frame</span>
+            <select id="video-spp">
+              <option value="4">Schnell (4 SPP / Frame)</option>
+              <option value="8" selected>Ausgewogen (8 SPP / Frame)</option>
+              <option value="16">Hoch (16 SPP / Frame)</option>
+              <option value="32">Kino (32 SPP / Frame)</option>
+            </select>
+          </label>
+          <button id="btn-render-video" class="btn btn-video btn-full">
+            ▶ Video-Sequenz rendern
+          </button>
         </section>
 
         <!-- Camera Presets -->
@@ -99,11 +144,43 @@
           <h3>Kamera-Presets</h3>
           <div class="preset-grid">
             <button class="preset-btn" data-preset="europe-day">Europa &amp; Afrika</button>
+            <button class="preset-btn" data-preset="earth-moon">Erde &amp; Mond</button>
+            <button class="preset-btn" data-preset="aurora-pole">Polarlichter</button>
             <button class="preset-btn" data-preset="iss-orbit">ISS Horizon</button>
             <button class="preset-btn" data-preset="twilight">Dämmerung</button>
             <button class="preset-btn" data-preset="americas">Amerika</button>
             <button class="preset-btn" data-preset="himalaya">Asien / Himalaya</button>
             <button class="preset-btn" data-preset="night-europe">Nachtlichter</button>
+          </div>
+        </section>
+
+        <!-- Moon & Aurora -->
+        <section class="section">
+          <h3>Mond &amp; Polarlichter</h3>
+          <label class="checkbox-row">
+            <input type="checkbox" id="moon-enabled" checked />
+            <span>Mond im Hintergrund aktiv</span>
+          </label>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Mond-Orbitwinkel</span>
+              <span class="mono" id="val-moon-angle">-124°</span>
+            </div>
+            <input type="range" id="moon-angle" min="-180" max="180" step="1" value="-124" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Mond-Distanz</span>
+              <span class="mono" id="val-moon-dist">6.2 R⊕</span>
+            </div>
+            <input type="range" id="moon-dist" min="3.2" max="16.0" step="0.2" value="6.2" />
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">
+              <span>Polarlichter (Aurora)</span>
+              <span class="mono" id="val-aurora">0.90</span>
+            </div>
+            <input type="range" id="aurora-intensity" min="0.0" max="2.5" step="0.05" value="0.90" />
           </div>
         </section>
 
@@ -113,23 +190,23 @@
           <div class="slider-group">
             <div class="slider-label">
               <span>Sonnen-Azimut</span>
-              <span class="mono" id="val-sun-az">48°</span>
+              <span class="mono" id="val-sun-az">-58°</span>
             </div>
-            <input type="range" id="sun-az" min="-180" max="180" step="0.5" value="48" />
+            <input type="range" id="sun-az" min="-180" max="180" step="0.5" value="-58" />
           </div>
           <div class="slider-group">
             <div class="slider-label">
               <span>Sonnen-Elevation</span>
-              <span class="mono" id="val-sun-el">18°</span>
+              <span class="mono" id="val-sun-el">14°</span>
             </div>
-            <input type="range" id="sun-el" min="-45" max="45" step="0.5" value="18" />
+            <input type="range" id="sun-el" min="-45" max="45" step="0.5" value="14" />
           </div>
           <div class="slider-group">
             <div class="slider-label">
               <span>Belichtung (Exposure)</span>
-              <span class="mono" id="val-exposure">1.25</span>
+              <span class="mono" id="val-exposure">1.05</span>
             </div>
-            <input type="range" id="exposure" min="0.4" max="2.5" step="0.05" value="1.25" />
+            <input type="range" id="exposure" min="0.4" max="2.5" step="0.05" value="1.05" />
           </div>
         </section>
 
@@ -139,23 +216,23 @@
           <div class="slider-group">
             <div class="slider-label">
               <span>Atmosphären-Dichte</span>
-              <span class="mono" id="val-atmo-density">1.10</span>
+              <span class="mono" id="val-atmo-density">1.00</span>
             </div>
-            <input type="range" id="atmo-density" min="0.0" max="2.2" step="0.05" value="1.10" />
+            <input type="range" id="atmo-density" min="0.0" max="2.2" step="0.05" value="1.00" />
           </div>
           <div class="slider-group">
             <div class="slider-label">
               <span>Atmosphären-Höhe</span>
-              <span class="mono" id="val-atmo-height">1.35</span>
+              <span class="mono" id="val-atmo-height">1.05</span>
             </div>
-            <input type="range" id="atmo-height" min="0.6" max="2.2" step="0.05" value="1.35" />
+            <input type="range" id="atmo-height" min="0.6" max="2.2" step="0.05" value="1.05" />
           </div>
           <div class="slider-group">
             <div class="slider-label">
               <span>Wolken-Deckung</span>
-              <span class="mono" id="val-cloud-cover">1.00</span>
+              <span class="mono" id="val-cloud-cover">0.90</span>
             </div>
-            <input type="range" id="cloud-cover" min="0.0" max="1.8" step="0.05" value="1.00" />
+            <input type="range" id="cloud-cover" min="0.0" max="1.8" step="0.05" value="0.90" />
           </div>
           <div class="slider-group">
             <div class="slider-label">
@@ -179,30 +256,30 @@
           <div class="slider-group">
             <div class="slider-label">
               <span>Gebirgs-Relief (Bump)</span>
-              <span class="mono" id="val-bump">1.20</span>
+              <span class="mono" id="val-bump">1.35</span>
             </div>
-            <input type="range" id="bump-strength" min="0.0" max="3.0" step="0.1" value="1.20" />
+            <input type="range" id="bump-strength" min="0.0" max="3.0" step="0.1" value="1.35" />
           </div>
           <div class="slider-group">
             <div class="slider-label">
               <span>Ozean-Glanz (Sun Glint)</span>
-              <span class="mono" id="val-ocean">1.00</span>
+              <span class="mono" id="val-ocean">1.15</span>
             </div>
-            <input type="range" id="ocean-spec" min="0.0" max="2.0" step="0.05" value="1.00" />
+            <input type="range" id="ocean-spec" min="0.0" max="2.0" step="0.05" value="1.15" />
           </div>
           <div class="slider-group">
             <div class="slider-label">
               <span>Nachtlichter (Städte)</span>
-              <span class="mono" id="val-lights">1.30</span>
+              <span class="mono" id="val-lights">1.65</span>
             </div>
-            <input type="range" id="night-lights" min="0.0" max="3.0" step="0.1" value="1.30" />
+            <input type="range" id="night-lights" min="0.0" max="3.0" step="0.1" value="1.65" />
           </div>
           <div class="slider-group">
             <div class="slider-label">
               <span>Sterne &amp; Milchstraße</span>
-              <span class="mono" id="val-stars">1.00</span>
+              <span class="mono" id="val-stars">1.10</span>
             </div>
-            <input type="range" id="stars-intensity" min="0.0" max="2.5" step="0.05" value="1.00" />
+            <input type="range" id="stars-intensity" min="0.0" max="2.5" step="0.05" value="1.10" />
           </div>
           <div class="slider-group">
             <div class="slider-label">
@@ -217,31 +294,35 @@
           </label>
         </section>
 
-        <!-- Custom 8K/16K Texture Drop -->
+        <!-- Local 8K & Custom Texture Upload -->
         <section class="section">
-          <h3>Eigene Texturen (optional 8K/16K)</h3>
-          <div class="upload-row">
+          <h3>Lokale 8K-Texturen</h3>
+          <div class="upload-row-4">
             <label class="file-btn">
-              Tag-Map
+              Tag
               <input type="file" id="file-day" accept="image/*" hidden />
             </label>
             <label class="file-btn">
-              Nacht-Map
+              Nacht
               <input type="file" id="file-night" accept="image/*" hidden />
             </label>
             <label class="file-btn">
               Wolken
               <input type="file" id="file-clouds" accept="image/*" hidden />
             </label>
+            <label class="file-btn">
+              Mond
+              <input type="file" id="file-moon" accept="image/*" hidden />
+            </label>
           </div>
           <p class="hint">
-            Standardmäßig werden 4K NASA Blue Marble Texturen geladen. Du kannst jederzeit eigene equirectangular 8K-Maps laden.
+            Tipp: Führe <code>./download_8k_textures.sh</code> im Repo aus, um automatisch lokale 8K-Texturen (Erde, Nacht, Wolken, Mond) zu aktivieren.
           </p>
         </section>
       </div>
     </aside>
 
-    <!-- Reopen Panel Button (when collapsed) -->
+    <!-- Reopen Panel Button -->
     <button id="btn-open-panel" class="open-panel-btn hidden" title="Einstellungen öffnen">
       ⚙ Steuerung
     </button>

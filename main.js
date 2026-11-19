@@ -12,7 +12,45 @@ const PRESETS = {
     atmoDensity: 1.00,
     atmoHeight: 1.05,
     cloudCover: 0.90,
+    auroraIntensity: 0.90,
+    moonEnabled: true,
+    moonAngleDeg: -124,
+    moonDist: 6.2,
     exposure: 1.05,
+  },
+  'earth-moon': {
+    camYaw: 0.24,
+    camPitch: 0.14,
+    camDist: 3.95,
+    camTargetOffset: [-0.22, 0.08, 0],
+    fovDeg: 42,
+    sunAzDeg: -68,
+    sunElDeg: 10,
+    atmoDensity: 1.05,
+    atmoHeight: 1.05,
+    cloudCover: 0.88,
+    auroraIntensity: 0.85,
+    moonEnabled: true,
+    moonAngleDeg: -128,
+    moonDist: 5.2,
+    exposure: 1.08,
+  },
+  'aurora-pole': {
+    camYaw: -0.18,
+    camPitch: 1.08,
+    camDist: 2.35,
+    camTargetOffset: [0, 0.12, 0],
+    fovDeg: 40,
+    sunAzDeg: 155,
+    sunElDeg: -16,
+    atmoDensity: 1.15,
+    atmoHeight: 1.10,
+    cloudCover: 0.55,
+    auroraIntensity: 1.85,
+    moonEnabled: true,
+    moonAngleDeg: -135,
+    moonDist: 6.8,
+    exposure: 1.25,
   },
   'iss-orbit': {
     camYaw: 0.22,
@@ -25,6 +63,10 @@ const PRESETS = {
     atmoDensity: 1.15,
     atmoHeight: 1.15,
     cloudCover: 0.95,
+    auroraIntensity: 1.10,
+    moonEnabled: true,
+    moonAngleDeg: -124,
+    moonDist: 6.2,
     exposure: 1.10,
   },
   'twilight': {
@@ -38,6 +80,10 @@ const PRESETS = {
     atmoDensity: 1.15,
     atmoHeight: 1.10,
     cloudCover: 0.90,
+    auroraIntensity: 1.15,
+    moonEnabled: true,
+    moonAngleDeg: -124,
+    moonDist: 6.2,
     exposure: 1.15,
   },
   'americas': {
@@ -51,6 +97,10 @@ const PRESETS = {
     atmoDensity: 1.00,
     atmoHeight: 1.05,
     cloudCover: 0.90,
+    auroraIntensity: 0.90,
+    moonEnabled: true,
+    moonAngleDeg: 52,
+    moonDist: 6.2,
     exposure: 1.05,
   },
   'himalaya': {
@@ -64,6 +114,10 @@ const PRESETS = {
     atmoDensity: 0.95,
     atmoHeight: 1.00,
     cloudCover: 0.65,
+    auroraIntensity: 0.70,
+    moonEnabled: true,
+    moonAngleDeg: -95,
+    moonDist: 6.2,
     exposure: 1.05,
   },
   'night-europe': {
@@ -77,6 +131,10 @@ const PRESETS = {
     atmoDensity: 1.15,
     atmoHeight: 1.10,
     cloudCover: 0.55,
+    auroraIntensity: 1.50,
+    moonEnabled: true,
+    moonAngleDeg: -124,
+    moonDist: 6.2,
     exposure: 1.25,
   },
 };
@@ -85,6 +143,7 @@ const canvas = document.getElementById('viewport');
 const loadingOverlay = document.getElementById('loading-overlay');
 const loadingTitle = document.getElementById('loading-title');
 const statMode = document.getElementById('stat-mode');
+const statTex = document.getElementById('stat-tex');
 const statRes = document.getElementById('stat-res');
 const statAlt = document.getElementById('stat-alt');
 
@@ -96,7 +155,9 @@ const renderProgressBar = document.getElementById('render-progress-bar');
 const pulseDot = renderBanner.querySelector('.pulse-dot');
 
 const btnRender = document.getElementById('btn-render');
+const btnRenderVideo = document.getElementById('btn-render-video');
 const btnDownload = document.getElementById('btn-download');
+const btnDownloadVideo = document.getElementById('btn-download-video');
 const btnBackLive = document.getElementById('btn-back-live');
 const btnCancelRender = document.getElementById('btn-cancel-render');
 
@@ -116,6 +177,9 @@ try {
 // Sliders & Controls Binding
 // ---------------------------------------------------------------------------
 const sliderBindings = [
+  { id: 'moon-angle', valId: 'val-moon-angle', key: 'moonAngleDeg', fmt: (v) => `${Math.round(v)}°` },
+  { id: 'moon-dist', valId: 'val-moon-dist', key: 'moonDist', fmt: (v) => `${v.toFixed(1)} R⊕` },
+  { id: 'aurora-intensity', valId: 'val-aurora', key: 'auroraIntensity', fmt: (v) => v.toFixed(2) },
   { id: 'sun-az', valId: 'val-sun-az', key: 'sunAzDeg', fmt: (v) => `${Math.round(v)}°` },
   { id: 'sun-el', valId: 'val-sun-el', key: 'sunElDeg', fmt: (v) => `${Math.round(v)}°` },
   { id: 'exposure', valId: 'val-exposure', key: 'exposure', fmt: (v) => v.toFixed(2) },
@@ -131,6 +195,8 @@ const sliderBindings = [
   { id: 'cam-fov', valId: 'val-fov', key: 'fovDeg', fmt: (v) => `${Math.round(v)}°` },
 ];
 
+const moonEnabledEl = document.getElementById('moon-enabled');
+
 function syncSlidersFromState() {
   for (const b of sliderBindings) {
     const el = document.getElementById(b.id);
@@ -138,6 +204,7 @@ function syncSlidersFromState() {
     el.value = renderer.state[b.key];
     valEl.textContent = b.fmt(Number(el.value));
   }
+  moonEnabledEl.checked = renderer.state.moonEnabled;
 }
 
 for (const b of sliderBindings) {
@@ -147,12 +214,16 @@ for (const b of sliderBindings) {
     const v = parseFloat(el.value);
     renderer.state[b.key] = v;
     valEl.textContent = b.fmt(v);
-    // Exposure works live even on finished HDR render; other params return to live preview
     if (b.key !== 'exposure' && renderer.mode !== 'live') {
       exitRenderView();
     }
   });
 }
+
+moonEnabledEl.addEventListener('change', (e) => {
+  renderer.state.moonEnabled = e.target.checked;
+  if (renderer.mode !== 'live') exitRenderView();
+});
 
 document.getElementById('auto-rotate').addEventListener('change', (e) => {
   renderer.state.autoRotate = e.target.checked;
@@ -179,13 +250,18 @@ function bindFileInput(id, slot) {
   input.addEventListener('change', async () => {
     const file = input.files?.[0];
     if (!file) return;
-    await renderer.loadCustomTexture(slot, file);
+    const info = await renderer.loadCustomTexture(slot, file);
+    if (info && info.width >= 7000) {
+      statTex.textContent = '8K CUSTOM';
+      statTex.className = 'badge badge-tex-8k';
+    }
     if (renderer.mode !== 'live') exitRenderView();
   });
 }
 bindFileInput('file-day', 'day');
 bindFileInput('file-night', 'night');
 bindFileInput('file-clouds', 'clouds');
+bindFileInput('file-moon', 'moon');
 
 // Panel collapse
 btnTogglePanel.addEventListener('click', () => {
@@ -198,9 +274,11 @@ btnOpenPanel.addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Offline Raytrace Render Flow
+// Offline Still Raytrace Render Flow
 // ---------------------------------------------------------------------------
 function startRaytraceRender() {
+  if (renderer.mode === 'video') renderer.returnToLive();
+
   const resVal = document.getElementById('render-res').value;
   const [w, h] = resVal.split('x').map(Number);
   const spp = parseInt(document.getElementById('render-spp').value, 10);
@@ -213,6 +291,7 @@ function startRaytraceRender() {
   renderProgressBar.style.width = '0%';
 
   btnDownload.classList.add('hidden');
+  btnDownloadVideo.classList.add('hidden');
   btnBackLive.classList.add('hidden');
   btnCancelRender.classList.remove('hidden');
 
@@ -221,6 +300,48 @@ function startRaytraceRender() {
   statRes.textContent = `${w}×${h}`;
 
   renderer.startOfflineRender(w, h, spp);
+}
+
+// ---------------------------------------------------------------------------
+// Animated 4K Video Sequence Render Flow
+// ---------------------------------------------------------------------------
+function startVideoSequenceRender() {
+  if (renderer.mode !== 'live') renderer.returnToLive();
+
+  const [w, h] = document.getElementById('video-res').value.split('x').map(Number);
+  const [durSec, fps] = document.getElementById('video-dur').value.split('x').map(Number);
+  const sppPerFrame = parseInt(document.getElementById('video-spp').value, 10);
+  const animType = document.getElementById('video-anim').value;
+  const totalFrames = Math.round(durSec * fps);
+
+  renderBanner.classList.remove('hidden');
+  pulseDot.classList.remove('done');
+  renderStatusText.textContent = `Video-Sequenz (${w}×${h})…`;
+  renderSppText.textContent = `Frame 0 / ${totalFrames}`;
+  renderTimeText.textContent = '0.0s';
+  renderProgressBar.style.width = '0%';
+
+  btnDownload.classList.add('hidden');
+  btnDownloadVideo.classList.add('hidden');
+  btnBackLive.classList.add('hidden');
+  btnCancelRender.classList.remove('hidden');
+
+  statMode.textContent = 'VIDEO RENDER';
+  statMode.className = 'badge badge-render';
+  statRes.textContent = `${w}×${h}`;
+
+  try {
+    renderer.startVideoRender({
+      width: w,
+      height: h,
+      fps,
+      durationSec: durSec,
+      sppPerFrame,
+      animType,
+    });
+  } catch (err) {
+    renderStatusText.textContent = err.message;
+  }
 }
 
 function exitRenderView() {
@@ -252,10 +373,34 @@ renderer.onRenderComplete = (w, h, spp, elapsed) => {
   statMode.textContent = 'RENDER FERTIG';
 };
 
+renderer.onVideoProgress = (curFrame, totalFrames, elapsed) => {
+  const pct = Math.min(100, (curFrame / totalFrames) * 100);
+  const eta = curFrame > 0 ? (elapsed / curFrame) * (totalFrames - curFrame) : 0;
+  renderProgressBar.style.width = `${pct.toFixed(1)}%`;
+  renderSppText.textContent = `Frame ${curFrame} / ${totalFrames}`;
+  renderTimeText.textContent = `ETA ${eta.toFixed(0)}s`;
+};
+
+renderer.onVideoComplete = ({ width, height, totalFrames, elapsed, ext }) => {
+  pulseDot.classList.add('done');
+  renderStatusText.textContent = `Video fertig (${width}×${height} .${ext})`;
+  renderSppText.textContent = `${totalFrames} Frames`;
+  renderTimeText.textContent = `${elapsed.toFixed(1)}s`;
+  renderProgressBar.style.width = '100%';
+
+  btnCancelRender.classList.add('hidden');
+  btnDownloadVideo.classList.remove('hidden');
+  btnBackLive.classList.remove('hidden');
+
+  statMode.textContent = 'VIDEO FERTIG';
+};
+
 btnRender.addEventListener('click', startRaytraceRender);
+btnRenderVideo.addEventListener('click', startVideoSequenceRender);
 btnCancelRender.addEventListener('click', exitRenderView);
 btnBackLive.addEventListener('click', exitRenderView);
 btnDownload.addEventListener('click', () => renderer.exportPng());
+btnDownloadVideo.addEventListener('click', () => renderer.downloadLastVideo());
 
 // ---------------------------------------------------------------------------
 // Interactive Orbit Camera & Sun Drag
@@ -280,19 +425,16 @@ canvas.addEventListener('pointermove', (e) => {
   lastY = e.clientY;
 
   if (e.shiftKey) {
-    // Rotate Sun
     renderer.state.sunAzDeg = ((renderer.state.sunAzDeg + dx * 0.35 + 540) % 360) - 180;
     renderer.state.sunElDeg = Math.max(-45, Math.min(45, renderer.state.sunElDeg - dy * 0.25));
     syncSlidersFromState();
   } else {
-    // Orbit Camera (slower when close to surface for precision)
     const speed = 0.0045 * Math.min(1.0, (renderer.state.camDist - 1.0) * 0.8 + 0.18);
     renderer.state.camYaw -= dx * speed;
     renderer.state.camPitch = Math.max(
       -Math.PI * 0.48,
       Math.min(Math.PI * 0.48, renderer.state.camPitch + dy * speed)
     );
-    // Gently return offset toward center when orbiting manually
     renderer.state.camTargetOffset = [0, 0, 0];
   }
 });
@@ -314,7 +456,6 @@ canvas.addEventListener('wheel', (e) => {
   updateTelemetry();
 }, { passive: false });
 
-// Keyboard shortcuts
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.key === 'r' || e.key === 'R') {
@@ -340,13 +481,14 @@ window.addEventListener('resize', () => {
   updateTelemetry();
 });
 
-// Start loading 4K NASA textures and launch loop
 syncSlidersFromState();
 updateTelemetry();
 
 renderer.loadDefaultTextures((msg) => {
   loadingTitle.textContent = msg;
-}).then(() => {
+}).then((tier) => {
+  statTex.textContent = tier;
+  statTex.className = tier.includes('8K') ? 'badge badge-tex-8k' : 'badge badge-tex';
   loadingOverlay.classList.add('hidden');
   let lastTime = performance.now();
   const loop = (now) => {

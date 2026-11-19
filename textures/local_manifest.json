@@ -1,0 +1,7 @@
+{
+  "useLocal8k": false,
+  "day": "./textures/8k_earth_daymap.jpg",
+  "night": "./textures/8k_earth_nightmap.jpg",
+  "clouds": "./textures/8k_earth_clouds.jpg",
+  "moon": "./textures/8k_moon.jpg"
+}
