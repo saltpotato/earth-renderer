@@ -87,6 +87,7 @@ export class DynamicTileStreamer {
     this.demCanvas.width = TILE_SIZE * GRID_SIZE;
     this.demCanvas.height = TILE_SIZE * GRID_SIZE;
     this.demCtx = this.demCanvas.getContext('2d');
+    this.demCtx.imageSmoothingEnabled = false;
 
     // Current uploaded GPU patch bounds: [xMin, yMin, gridSize, nTiles]
     this.activeBounds = [0, 0, GRID_SIZE, 1];

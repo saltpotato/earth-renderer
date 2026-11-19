@@ -188,6 +188,25 @@ float decodeTerrariumMeters(vec3 rgb) {
   return (rgb.r * 255.0 * 256.0 + rgb.g * 255.0 + rgb.b * (255.0 / 256.0)) - 32768.0;
 }
 
+// Exact bilinear height decode (avoids 8-bit hardware RGB carry artifacts on Terrarium tiles!)
+float sampleTerrariumMeters(vec2 uv) {
+  vec2 texSize = vec2(2048.0);
+  vec2 p = clamp(uv, 0.0, 1.0) * texSize - 0.5;
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  ivec2 maxIdx = ivec2(2047);
+  ivec2 p00 = clamp(ivec2(i), ivec2(0), maxIdx);
+  ivec2 p10 = clamp(p00 + ivec2(1, 0), ivec2(0), maxIdx);
+  ivec2 p01 = clamp(p00 + ivec2(0, 1), ivec2(0), maxIdx);
+  ivec2 p11 = clamp(p00 + ivec2(1, 1), ivec2(0), maxIdx);
+
+  float h00 = decodeTerrariumMeters(texelFetch(uTileDemTex, p00, 0).rgb);
+  float h10 = decodeTerrariumMeters(texelFetch(uTileDemTex, p10, 0).rgb);
+  float h01 = decodeTerrariumMeters(texelFetch(uTileDemTex, p01, 0).rgb);
+  float h11 = decodeTerrariumMeters(texelFetch(uTileDemTex, p11, 0).rgb);
+  return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+}
+
 // Zero-cancellation radial altitude above R_EARTH = 1.0 along camera ray
 float rayAltFromCam(vec3 ro, vec3 rd, float camAlt, float t) {
   vec3 p = ro + rd * t;
@@ -203,7 +222,7 @@ float sampleTerrainHeightRadii(vec3 n) {
   }
   float fx = smoothstep(0.002, 0.08, tuv.x) * smoothstep(0.998, 0.92, tuv.x);
   float fy = smoothstep(0.002, 0.08, tuv.y) * smoothstep(0.998, 0.92, tuv.y);
-  float meters = max(0.0, decodeTerrariumMeters(textureLod(uTileDemTex, tuv, 0.0).rgb));
+  float meters = max(0.0, sampleTerrariumMeters(tuv));
   return (meters / 6371000.0) * uTerrainExag * fx * fy * uTileBlend;
 }
 
@@ -224,10 +243,10 @@ float raymarchTerrain3D(vec3 ro, vec3 rd, float camAlt, float tStart, float tEnd
     float hTerr = sampleTerrainHeightRadii(normalize(p));
 
     if (hRay <= hTerr) {
-      // 7-step binary search for sub-meter exact 3D mountain surface
+      // 9-step binary search for sub-meter exact 3D mountain surface (eliminates step rings)
       float lo = tPrev;
       float hi = t;
-      for (int b = 0; b < 7; b++) {
+      for (int b = 0; b < 9; b++) {
         float mid = 0.5 * (lo + hi);
         float hm = rayAltFromCam(ro, rd, camAlt, mid);
         float ht = sampleTerrainHeightRadii(normalize(ro + rd * mid));
@@ -245,22 +264,24 @@ float raymarchTerrain3D(vec3 ro, vec3 rd, float camAlt, float tStart, float tEnd
   return -1.0;
 }
 
-// Soft 3D terrain cast shadows (mountains casting shadows across valleys!)
+// Soft 3D terrain cast shadows (with altitude bias to prevent flat-plain self-shadow waves!)
 float traceTerrainShadow(vec3 hitPos, float hitAlt, vec3 sunDir) {
   if (uTerrainExag <= 0.01 || uTileBlend <= 0.05) return 1.0;
   float dMax = 0.00145 * uTerrainExag;
+  // Bias start altitude slightly above exact surface height so flat plains never self-intersect
+  float baseAlt = max(hitAlt, sampleTerrainHeightRadii(normalize(hitPos))) + 0.000010;
   float shadow = 1.0;
-  float t = 0.00004;
+  float t = 0.00012;
   for (int i = 0; i < 14; i++) {
     vec3 p = hitPos + sunDir * t;
-    float r2Minus1 = hitAlt * (hitAlt + 2.0) + t * (2.0 * dot(hitPos, sunDir) + t);
+    float r2Minus1 = baseAlt * (baseAlt + 2.0) + t * (2.0 * dot(hitPos, sunDir) + t);
     float hRay = r2Minus1 / (length(p) + 1.0);
     if (hRay > dMax) break;
     float hTerr = sampleTerrainHeightRadii(normalize(p));
     float diff = hRay - hTerr;
-    if (diff < 0.0) return 0.14;
-    shadow = min(shadow, clamp(0.14 + (diff / (t * 0.12 + 1e-6)), 0.14, 1.0));
-    t *= 1.48;
+    if (diff < -0.000004) return 0.16;
+    shadow = min(shadow, clamp(0.16 + (diff / (t * 0.14 + 1e-5)), 0.16, 1.0));
+    t *= 1.45;
   }
   return shadow;
 }
@@ -733,11 +754,11 @@ void main() {
       if (tileMask > 0.01) {
         // High-resolution Terrarium DEM finite-difference normal (8x8 = 2048x2048 patch)
         float du = 2.0 / 2048.0;
-        float dL = decodeTerrariumMeters(textureLod(uTileDemTex, clamp(tileUv - vec2(du, 0.0), 0.0, 1.0), 0.0).rgb);
-        float dR = decodeTerrariumMeters(textureLod(uTileDemTex, clamp(tileUv + vec2(du, 0.0), 0.0, 1.0), 0.0).rgb);
+        float dL = sampleTerrariumMeters(tileUv - vec2(du, 0.0));
+        float dR = sampleTerrariumMeters(tileUv + vec2(du, 0.0));
         // Note: tileUv.y increases southward, so -du is North (+B)
-        float dN = decodeTerrariumMeters(textureLod(uTileDemTex, clamp(tileUv - vec2(0.0, du), 0.0, 1.0), 0.0).rgb);
-        float dS = decodeTerrariumMeters(textureLod(uTileDemTex, clamp(tileUv + vec2(0.0, du), 0.0, 1.0), 0.0).rgb);
+        float dN = sampleTerrariumMeters(tileUv - vec2(0.0, du));
+        float dS = sampleTerrariumMeters(tileUv + vec2(0.0, du));
 
         float cosLat = max(0.2, sqrt(max(0.0, 1.0 - N.y * N.y)));
         float spanMeters = max(12.0, (4.0 * 156543.0 * cosLat) / uTileBounds.w);
